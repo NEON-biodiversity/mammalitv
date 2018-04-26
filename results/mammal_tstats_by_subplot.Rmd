@@ -1,0 +1,367 @@
+---
+title: "Mammal T-statistics by subplot"
+author: "Quentin D. Read"
+date: "August 29, 2016"
+output: 
+  pdf_document:
+    toc: TRUE
+---
+
+# Introduction
+
+The mammal surveys were done at a number of different trapping grids within each NEON site. The number varies from site to site but ranges from around 4 to 8. I defined one trapping grid, or plot, as a community, and pooled all samples from different days in a single year from that plot (assuming that the multiple samples just help to characterize the community better). I did remove all recaptured individuals from the analysis, so hopefully no individuals are represented multiple times in the sample. I ran the null models to calculate the T-statistic distributions on the cluster, because with that many subplots it takes a pretty long time to run the 999 permutations (probably 3 or 4 hours if not longer).
+
+I used two different definitions of the regional species pool. For the first, I used the IUCN range maps. For the second, I defined the regional species pool at the level of the NEON site (i.e. for each trapping grid, the regional species pool is all the species that are present at all the trapping grids at that site). Either way, all the trapping grids at a single site share the same regional species pool. Below, you will see that the two different definitions made almost no difference to the results, so I just used the IUCN pools.
+
+We have climate and topography data down to the plot level, so we can fit linear mixed models to these data, where the plots are the replicates and site is a random effect in the model. Later, I will write a Bayesian regression model to fit the same mixed models and get better estimates of the uncertainty around the parameter estimates. For now, I will use lmer with bootstrapped confidence intervals, which should be pretty close to whatever you would get from the Bayesian estimates, unless we try to use very esoteric assumptions in the Bayesian model.
+
+\newpage
+# Plots of T-statistics
+
+```{r, message=FALSE, echo=FALSE, warning=FALSE}
+# Load and join all relevant data.
+
+library(cati)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(reshape2)
+source('~/GitHub/NEON/code/analysis/tstat2longform.r')
+source('~/qutil.r')
+source('~/GitHub/NEON/code/bioclimnames.r')
+
+load('~/GitHub/NEON/allorganismal_latest.r')
+load('~/GitHub/NEON/allsiteplot_latest.r')
+load('C:/Users/Q/Dropbox/neon/code/tstats_mam_plots15_iucnpool.r')
+load('C:/Users/Q/Dropbox/neon/code/tstats_mam_plots15_sitepool.r')
+load('C:/Users/Q/Dropbox/neon/code/mammalPDbyplotobject.r')
+
+spatialstat <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/NEON_spatial_stats.csv')
+neonplotdata <- cbind(neonplotdata, spatialstat) %>% rename(ruggedness = tri)
+
+tmiucn <- tstat2longform_ses(tstats_mam_plots15_iucnpool, bysite = FALSE) %>% 
+  left_join(filter(neonplotdata, subtype == 'mammalGrid'))
+tmsite <- tstat2longform_ses(tstats_mam_plots15_sitepool, bysite = FALSE) %>%
+  left_join(filter(neonplotdata, subtype == 'mammalGrid'))
+
+# Mammals have abundance so we use the Chao1 estimator.
+
+chao <- function(x) {
+  xcomm <- table(x$taxonID)
+  S_obs <- length(xcomm)
+  f1 <- sum(xcomm == 1)
+  f2 <- sum(xcomm == 2)
+  return(data.frame(chao1 = S_obs + (f1 * (f1 - 1)) / (2 * (f2 + 1))))
+}
+
+chao1mammal15 <- mam_capture %>% filter(year(date) == 2015) %>%
+  group_by(plotID) %>% do(chao(.))
+
+tmiucn <- left_join(tmiucn, chao1mammal15)
+tmsite <- left_join(tmsite, chao1mammal15)
+
+tmiucn <- left_join(tmiucn, mammalPD)
+tmsite <- left_join(tmsite, mammalPD)
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+tmboth <- full_join(tmiucn[,1:4], tmsite[,1:4], by = c('trait','plotID','stat')) %>% rename(t_IUCN = t.x, t_site = t.y)
+
+ggplot(filter(tmboth, trait %in% c('hindfootLength', 'weight')), aes(x = t_IUCN, y = t_site)) +
+  geom_abline(slope = 1, color = 'red', size = 1.2) +
+  geom_point() + coord_equal() +
+  facet_grid(stat ~ trait) +
+  xlim(-10, 10) + ylim(-10, 10) +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent')) +
+  ggtitle('Comparison of regional species pool methods')
+  
+```
+
+**Figure 1.** Diagnostic plot comparing the two ways of modeling the regional species pool. The red line is y=x. It does not seem like the method of choosing the regional species pool makes that much of a difference.R^2^ > 0.96 for all combinations. Since the IUCN and site-based regional species pool estimates are so similar, I will present only the IUCN results for the rest of this document, assuming that it will not make a qualitative difference which is used. Note that the $T_{IP/IC}$ values should be identical because the regional species pool is not used to generate those null distributions. Any differences there are just differences between the two different runs.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+pttemp <- ggplot(subset(tmiucn, trait %in% c('hindfootLength', 'weight')), aes(x=bio1)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=bio1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = parse(text=bioclimnames[1])) +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent')) +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus MAT', 'IUCN regional species pools')
+
+pttemp
+```
+
+**Figure 2.** T-statistics for the community defined by each mammal sampling grid across all sites in 2015 as a function of local mean annual temperature (at the subplot level), extracted from 800-m resolution (downscaled) PRISM data layer. The T-statistics have been transformed to standardized effect sizes relative to the null distributions. The 95% confidence interval of the null distributions are shown as light blue bars.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+pttempseas <- ggplot(subset(tmiucn, trait %in% c('hindfootLength', 'weight')), aes(x=bio4)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend = bio4), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = bioclimnames[4]) +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent')) +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus temperature seasonality', 'IUCN regional species pools')
+
+pttempseas
+```
+
+**Figure 3.** T-statistics for the community defined by each mammal sampling grid across all sites in 2015 as a function of local temperature seasonality (at the subplot level), extracted from 800-m resolution (downscaled) PRISM data layer. The T-statistics have been transformed to standardized effect sizes relative to the null distributions. The 95% confidence interval of the null distributions are shown as light blue bars.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+pttempvar <- ggplot(subset(tmiucn, trait %in% c('hindfootLength', 'weight')), aes(x=cv_bio1)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=cv_bio1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Among-year temperature CV') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent')) +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus interannual temp. var.', 'IUCN regional species pools')
+
+pttempvar
+```
+
+**Figure 4.** T-statistics for the community defined by each mammal sampling grid across all sites in 2015 as a function of local interannual temperature variability (at the subplot level), extracted from 800-m resolution (downscaled) PRISM data layer. The T-statistics have been transformed to standardized effect sizes relative to the null distributions. The 95% confidence interval of the null distributions are shown as light blue bars.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+ptchao <- ggplot(subset(tmiucn, trait %in% c('hindfootLength', 'weight')), aes(x=chao1)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=chao1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Chao1 Richness Estimator') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent')) +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus species richness', 'IUCN regional species pools')
+
+ptchao
+```
+
+**Figure 5.** T-statistics for the community defined by each mammal sampling grid across all sites in 2015 as a function of local estimated species richness. The T-statistics have been transformed to standardized effect sizes relative to the null distributions. The 95% confidence interval of the null distributions are shown as light blue bars.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+ptmpd <- ggplot(subset(tmiucn, trait %in% c('hindfootLength', 'weight')), aes(x=mpd.obs.z2015)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=mpd.obs.z2015), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'SES of MPD') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent')) +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus MPD', 'IUCN regional species pools')
+
+ptmpd
+```
+
+**Figure 6.** T-statistics for the community defined by each mammal sampling grid across all sites in 2015 as a function of phylogenetic diversity (standardized effect size of mean pairwise distance). The T-statistics have been transformed to standardized effect sizes relative to the null distributions. The 95% confidence interval of the null distributions are shown as light blue bars.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+ptmntd <- ggplot(subset(tmiucn, trait %in% c('hindfootLength', 'weight')), aes(x=mntd.obs.z2015)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=mntd.obs.z2015), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'SES of MNTD') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent')) +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus MNTD', 'IUCN regional species pools')
+
+ptmntd
+```
+
+**Figure 7.** T-statistics for the community defined by each mammal sampling grid across all sites in 2015 as a function of phylogenetic diversity (standardized effect size of mean nearest taxon distance). The T-statistics have been transformed to standardized effect sizes relative to the null distributions. The 95% confidence interval of the null distributions are shown as light blue bars.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+ptrugg <- ggplot(subset(tmiucn, trait %in% c('hindfootLength', 'weight')), aes(x=ruggedness)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=ruggedness), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Terrain Ruggedness Index') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent')) +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus ruggedness', 'IUCN regional species pools')
+
+ptrugg
+```
+
+**Figure 8.** T-statistics for the community defined by each mammal sampling grid across all sites in 2015 as a function of topographic heterogeneity at the plot level, as measured by the Terrain Ruggedness Index. The T-statistics have been transformed to standardized effect sizes relative to the null distributions. The 95% confidence interval of the null distributions are shown as light blue bars.
+
+[Click to return to table of contents](#top)
+
+\newpage
+# Hypothesis testing (linear mixed models)
+
+I ran linear mixed models with a number of predictors and their two-way interactions (all standardized). I fit a random intercept to each site (there are more complex possibilities out there but I stuck with that simple assumption). Because of the high complexity, I had to limit the model selection to have only four terms at most. It is a very naive model selection that blindly fits all models with four or fewer terms (over 20,000 possibilities) and compares their AICc. I show results from the best model here, as well as model-averaging results that use all the models below a preset AICc threshold.
+
+## Take-home messages of regressions
+
+This is a summary of what I think are the most important results. It looks like as phylogenetic diversity, the $T_{IP/IC}$ of body weight decreases, so phylogenetic diversity is associated with stronger internal filters. This is the opposite of the prediction in the grant proposal. No one factor pops out for the local T-statistic of foot length. As for the $T_{IC/IR}$, or the community:regional ratio, it looks like temperature and temperature variability are positively associated with increasing intraspecific variation (weaker external filters), as is phylogenetic diversity. For foot length, richness is added to those predictors. The temperature variability relationship is predicted in the grant proposal, but the other relationships are not. I would argue that the positive relationship between richness/diversity and weakness of external filters could be argued to indirectly measure the heterogeneity of the habitat or the diversity of niches (although we don't directly see topography come out as a predictor). So we could argue that those results more or less fit the predictions, though overall the variation explained is somewhat low.
+
+\newpage
+## T_IP/IC of body weight
+
+```{r, tidy=TRUE, warning=FALSE}
+library(lme4)
+library(MuMIn)
+
+# Set up predictor and response data frame, with standardized predictors. Remove incomplete rows.
+tipic_wtlmdat <- tmiucn %>% 
+  filter(stat == 'T_IP.IC', trait == 'weight') %>% 
+  select(siteID, t, bio1, bio4, cv_bio1, chao1, mpd.obs.z2015, mntd.obs.z2015, ruggedness) %>%
+  mutate_each(funs((. - mean(., na.rm=T))/sd(., na.rm=T)), bio1:ruggedness) %>%
+  filter(complete.cases(.))
+
+# Fit full model
+tipic_wtlm <- lmer(t ~ bio1 + bio4 + cv_bio1 + chao1 + mpd.obs.z2015 + mntd.obs.z2015 + ruggedness + bio1:bio4 + bio1:cv_bio1 + bio1:chao1 + bio1:mpd.obs.z2015 + bio1:mntd.obs.z2015 + bio1:ruggedness + bio4:cv_bio1 + bio4:chao1 + bio4:mpd.obs.z2015 + bio4:mntd.obs.z2015 + bio4:ruggedness + cv_bio1:chao1 + cv_bio1:mpd.obs.z2015 + cv_bio1:mntd.obs.z2015 + cv_bio1:ruggedness + chao1:mpd.obs.z2015 + chao1:mntd.obs.z2015 + chao1:ruggedness + mpd.obs.z2015:mntd.obs.z2015 + mpd.obs.z2015:ruggedness + mntd.obs.z2015:ruggedness + (1|siteID), data = tipic_wtlmdat, na.action = 'na.pass', REML = FALSE)
+  
+# Run stupid model selection on the model
+tipic_wtdredge <- dredge(tipic_wtlm, m.lim = c(0,4))
+
+# Extract best models below preset threshold
+tipic_wtbest <- get.models(tipic_wtdredge, subset = delta < 1)
+
+# Run model averaging on all models below threshold
+tipic_wtavg <- model.avg(tipic_wtbest)
+
+# Show summary of model averaged parameters
+#summary(tipic_wtavg)
+
+# Show which parameters are in the best models
+plot(subset(tipic_wtdredge, delta < 1))
+
+# Show summary of parameter estimates in single best model only
+summary(tipic_wtbest[[1]])
+
+# Get bootstrap CI of parameters
+confint(tipic_wtbest[[1]], method = 'boot', nsim = 999)
+  
+# Find R-squared of the fixed and random effects
+r.squaredGLMM(tipic_wtbest[[1]])
+```
+
+The relationship here is that as phylogenetic diversity increases, the relative importance of intraspecific variation within communities decreases. In other words, phylogenetic diversity within communities is positively correlated with the strength of internal filters. This is the opposite of the prediction given in the grant proposal. However the variation explained by phylogenetic diversity alone is relatively low.
+
+\newpage
+## T_IP/IC of hind foot length
+
+```{r, tidy=TRUE, warning=FALSE}
+# Set up predictor and response data frame, with standardized predictors. Remove incomplete rows.
+tipic_hflmdat <- tmiucn %>% 
+  filter(stat == 'T_IP.IC', trait == 'hindfootLength') %>% 
+  select(siteID, t, bio1, bio4, cv_bio1, chao1, mpd.obs.z2015, mntd.obs.z2015, ruggedness) %>%
+  mutate_each(funs((. - mean(., na.rm=T))/sd(., na.rm=T)), bio1:ruggedness) %>%
+  filter(complete.cases(.))
+
+# Fit full model
+tipic_hflm <- lmer(t ~ bio1 + bio4 + cv_bio1 + chao1 + mpd.obs.z2015 + mntd.obs.z2015 + ruggedness + bio1:bio4 + bio1:cv_bio1 + bio1:chao1 + bio1:mpd.obs.z2015 + bio1:mntd.obs.z2015 + bio1:ruggedness + bio4:cv_bio1 + bio4:chao1 + bio4:mpd.obs.z2015 + bio4:mntd.obs.z2015 + bio4:ruggedness + cv_bio1:chao1 + cv_bio1:mpd.obs.z2015 + cv_bio1:mntd.obs.z2015 + cv_bio1:ruggedness + chao1:mpd.obs.z2015 + chao1:mntd.obs.z2015 + chao1:ruggedness + mpd.obs.z2015:mntd.obs.z2015 + mpd.obs.z2015:ruggedness + mntd.obs.z2015:ruggedness + (1|siteID), data = tipic_hflmdat, na.action = 'na.pass', REML = FALSE)
+  
+# Run stupid model selection on the model
+tipic_hfdredge <- dredge(tipic_hflm, m.lim = c(0,4))
+
+# Extract best models below preset threshold
+tipic_hfbest <- get.models(tipic_hfdredge, subset = delta < 1)
+
+# Run model averaging on all models below threshold
+tipic_hfavg <- model.avg(tipic_hfbest)
+
+# Show summary of model averaged parameters
+#summary(tipic_hfavg)
+
+# Show which parameters are in the best models
+plot(subset(tipic_hfdredge, delta < 1))
+
+# Show summary of parameter estimates in single best model only
+summary(tipic_hfbest[[1]])
+
+# Get bootstrap CI of parameters
+confint(tipic_hfbest[[1]], method = 'boot', nsim = 999)
+  
+# Find R-squared of the fixed and random effects
+r.squaredGLMM(tipic_hfbest[[1]])
+```
+
+\newpage
+## T_IC/IR of body weight
+
+```{r, tidy=TRUE, warning=FALSE}
+# Set up predictor and response data frame, with standardized predictors. Remove incomplete rows.
+ticir_wtlmdat <- tmiucn %>% 
+  filter(stat == 'T_IC.IR', trait == 'weight') %>% 
+  select(siteID, t, bio1, bio4, cv_bio1, chao1, mpd.obs.z2015, mntd.obs.z2015, ruggedness) %>%
+  mutate_each(funs((. - mean(., na.rm=T))/sd(., na.rm=T)), bio1:ruggedness) %>%
+  filter(complete.cases(.))
+
+# Fit full model
+ticir_wtlm <- lmer(t ~ bio1 + bio4 + cv_bio1 + chao1 + mpd.obs.z2015 + mntd.obs.z2015 + ruggedness + bio1:bio4 + bio1:cv_bio1 + bio1:chao1 + bio1:mpd.obs.z2015 + bio1:mntd.obs.z2015 + bio1:ruggedness + bio4:cv_bio1 + bio4:chao1 + bio4:mpd.obs.z2015 + bio4:mntd.obs.z2015 + bio4:ruggedness + cv_bio1:chao1 + cv_bio1:mpd.obs.z2015 + cv_bio1:mntd.obs.z2015 + cv_bio1:ruggedness + chao1:mpd.obs.z2015 + chao1:mntd.obs.z2015 + chao1:ruggedness + mpd.obs.z2015:mntd.obs.z2015 + mpd.obs.z2015:ruggedness + mntd.obs.z2015:ruggedness + (1|siteID), data = ticir_wtlmdat, na.action = 'na.pass', REML = FALSE)
+  
+# Run stupid model selection on the model
+ticir_wtdredge <- dredge(ticir_wtlm, m.lim = c(0,4))
+
+# Extract best models below preset threshold
+ticir_wtbest <- get.models(ticir_wtdredge, subset = delta < 1)
+
+# Run model averaging on all models below threshold
+ticir_wtavg <- model.avg(ticir_wtbest)
+
+# Show summary of model averaged parameters
+#summary(ticir_wtavg)
+
+# Show which parameters are in the best models
+plot(subset(ticir_wtdredge, delta < 1))
+
+# Show summary of parameter estimates in single best model only
+summary(ticir_wtbest[[1]])
+
+# Get bootstrap CI of parameters
+confint(ticir_wtbest[[1]], method = 'boot', nsim = 999)
+  
+# Find R-squared of the fixed and random effects
+r.squaredGLMM(ticir_wtbest[[1]])
+```
+
+\newpage
+## T_IC/IR of hind foot length
+
+```{r, tidy=TRUE, warning=FALSE}
+# Set up predictor and response data frame, with standardized predictors. Remove incomplete rows.
+ticir_hflmdat <- tmiucn %>% 
+  filter(stat == 'T_IC.IR', trait == 'hindfootLength') %>% 
+  select(siteID, t, bio1, bio4, cv_bio1, chao1, mpd.obs.z2015, mntd.obs.z2015, ruggedness) %>%
+  mutate_each(funs((. - mean(., na.rm=T))/sd(., na.rm=T)), bio1:ruggedness) %>%
+  filter(complete.cases(.))
+
+# Fit full model
+ticir_hflm <- lmer(t ~ bio1 + bio4 + cv_bio1 + chao1 + mpd.obs.z2015 + mntd.obs.z2015 + ruggedness + bio1:bio4 + bio1:cv_bio1 + bio1:chao1 + bio1:mpd.obs.z2015 + bio1:mntd.obs.z2015 + bio1:ruggedness + bio4:cv_bio1 + bio4:chao1 + bio4:mpd.obs.z2015 + bio4:mntd.obs.z2015 + bio4:ruggedness + cv_bio1:chao1 + cv_bio1:mpd.obs.z2015 + cv_bio1:mntd.obs.z2015 + cv_bio1:ruggedness + chao1:mpd.obs.z2015 + chao1:mntd.obs.z2015 + chao1:ruggedness + mpd.obs.z2015:mntd.obs.z2015 + mpd.obs.z2015:ruggedness + mntd.obs.z2015:ruggedness + (1|siteID), data = ticir_hflmdat, na.action = 'na.pass', REML = FALSE)
+  
+# Run stupid model selection on the model
+ticir_hfdredge <- dredge(ticir_hflm, m.lim = c(0,4))
+
+# Extract best models below preset threshold
+ticir_hfbest <- get.models(ticir_hfdredge, subset = delta < 1)
+
+# Run model averaging on all models below threshold
+ticir_hfavg <- model.avg(ticir_hfbest)
+
+# Show summary of model averaged parameters
+#summary(ticir_hfavg)
+
+# Show which parameters are in the best models
+plot(subset(ticir_hfdredge, delta < 1))
+
+# Show summary of parameter estimates in single best model only
+summary(ticir_hfbest[[1]])
+
+# Get bootstrap CI of parameters
+confint(ticir_hfbest[[1]], method = 'boot', nsim = 999)
+  
+# Find R-squared of the fixed and random effects
+r.squaredGLMM(ticir_hfbest[[1]])
+```
+
+[Click to return to table of contents](#top)
+
+```{r, message = FALSE, echo = FALSE}
+# Save for future analysis.
+save(list = ls(pattern = 'tipic_|ticir_'), file = 'C:/Users/Q/Dropbox/neon/code/tipicdredgedmixedmodels.r')
+```
+

@@ -1,0 +1,156 @@
+---
+title: "Phylogenetic diversity methods"
+author: "Quentin D. Read"
+date: "August 25, 2016"
+output: pdf_document
+---
+
+```{r, message=FALSE, echo=FALSE, warning=FALSE, results='hide'}
+# Load in the phylogeny for mammals
+
+library(ape)
+library(picante)
+tol <- read.tree('C:/Users/Q/Dropbox/neon/data/external_datasets/phylo/TimetreeOfLife2015.nwk')
+
+# Load mammal names
+mammalTax <- read.csv('~/GitHub/NEON/species_lists/mammalSpeciesList.csv', stringsAsFactors = FALSE)
+
+# Load NEON data and calculate phylogenetic diversity indices
+load('~/GitHub/NEON/allorganismal_latest.r')
+
+# Process data to get communities for each year (same communities as are used for the Chao calculation)
+
+library(dplyr)
+library(lubridate)
+library(reshape2)
+
+# These are all the capture grids, with possibly multiple bouts per year
+# Get rid of blank or "Other" taxonIDs, and two individuals with a possibly typo species code
+mam_comms <- mam_capture %>% mutate(gridID = substr(trapCoordinate,1,1), year = year(date)) %>%
+  filter(taxonID != '', taxonID != 'OTHE', taxonID != 'ROSP') %>%
+  group_by(year, siteID) %>%
+  do(comm = dcast(., formula = gridID ~ taxonID)[,-1, drop = FALSE]) # Get rid of date col and use n. rows as n. individuals
+
+mam_comms_byyear <- do(mam_comms, abund = apply(.$comm, 2, sum))
+
+# Make a single matrix for each year.
+comm_mat <- function(x) {
+  mat <- dcast(x, formula = siteID ~ taxonID)
+  row.names(mat) <- mat$siteID
+  mat[,-1, drop=FALSE]
+}
+
+mam_mats <- mam_capture %>% mutate(year = year(date)) %>%
+  filter(taxonID != '', taxonID != 'OTHE', taxonID != 'ROSP') %>%
+  group_by(year) %>%
+  do(comm = comm_mat(.))
+
+# Get the list of four-letter codes that are in the mammal matrices
+allIDs <- Reduce(union, sapply(mam_mats$comm, names))
+allIDs <- merge(data.frame(taxonID=allIDs), mammalTax[,c('taxonID','scientificName')], all.x=TRUE)
+allIDs <- transform(allIDs, scientificName = sub(" ", "_", scientificName))
+
+# Figure out which of the mammals in mammal community aren't in the tree, and add them to "tol" using phyTools
+# It is a lot of unidentified species, and some Spermophilus species.
+
+spp_not_in_tree <- allIDs$scientificName[!allIDs$scientificName %in% tol$tip.label]
+
+# Extract the mammal clade from phylogeny
+sum(mammalTax$scientificName %in% tol$tip.label) # Wrong format
+sum(with(mammalTax, paste(genus, specificEpithet, sep='_')) %in% tol$tip.label) # 300 are in
+
+not_mammals <- which(!(tol$tip.label %in% allIDs$scientificName) & !grepl('Spermophilus', tol$tip.label))
+mammaltol <- drop.tip(tol, tip=not_mammals) 
+
+# Add tips for individuals that are only identified to genus, and add Spermophilus.
+library(phytools)
+for (i in spp_not_in_tree[1:9]) mammaltol <- add.species.to.genus(tree = mammaltol, species = i, where = 'root')
+for (i in spp_not_in_tree[10:13]) mammaltol <- add.species.to.genus(tree = mammaltol, species = i, where = 'random')
+
+# Prune out the other spermophilus entries
+mammaltol <- drop.tip(mammaltol, tip=which(!(mammaltol$tip.label %in% allIDs$scientificName)))
+
+# Change the tip labels of the mammal phylogeny to the taxonIDs
+mammaltol$tip.label <- as.character(allIDs$taxonID)[match(mammaltol$tip.label, allIDs$scientificName)]
+
+
+# Calculate pd metrics ----------------------------------------------------
+
+# PD
+mc2014 <- mam_mats$comm[[2]]
+mc2015 <- mam_mats$comm[[3]]
+
+tree2014 <- prune.sample(mc2014, mammaltol)
+tree2015 <- prune.sample(mc2015, mammaltol)
+
+pd2014 <- pd(mc2014, tree2014)
+pd2015 <- pd(mc2015, tree2015)
+
+# MPD and MNTD
+dist2014 <- cophenetic(tree2014)
+dist2015 <- cophenetic(tree2015)
+
+# Compare null models within MPD and within MNTD
+
+mpds <- list()
+mntds <- list()
+nms <- c("taxa.labels", "richness", "frequency", "sample.pool", "phylogeny.pool", "independentswap", "trialswap")
+
+for (nm in nms) {
+  mpds <- within(mpds, assign(nm, ses.mpd(mc2015, dist2015, null.model = nm, abundance.weighted = TRUE, runs = 999)$mpd.obs.z))
+  mntds <- within(mntds, assign(nm, ses.mntd(mc2015, dist2015, null.model = nm, abundance.weighted = TRUE, runs = 999)$mntd.obs.z))
+}
+
+
+```
+
+
+I am not familiar with phylogenetic diversity metrics, so I wanted to know if anyone had any ideas about which methods are the best to use for our questions. I know that mean pairwise distance and mean nearest taxon distance show two different aspects of diversity: mean pairwise distance describes large-scale patterns in the tree more broadly across the phylogeny, and mean nearest taxon distance picks up the finer differences. However there are a number of randomization methods for the null models with which you calculate the standardized effect sizes of MPD and MNTD (which are the opposite of NRI and NTI).
+
+The names of the methods in the *picante* package are:
+
+* taxa.labels
+* richness
+* frequency
+* sample.pool
+* phylogeny.pool
+* independentswap
+* trialswap
+
+Within MPD and MNTD, I plotted these methods pairwise against one another to show which ones differ, and I also plotted the MPD versus the MNTD for each method to see if the relationship between them was similar depending on which method I used. The plots are below, I would appreciate any feedback on what seems to be going on here and what is the best method to use.
+
+```{r, message=FALSE, echo=FALSE, fig.height=7, fig.width=7}
+library(GGally)
+ggpairs(do.call('cbind', mpds))
+```
+
+**Figure 1.** Pairwise plots of SES.MPD (standardized effect size of mean pairwise distance, or -1 * NRI), by randomization method.
+
+```{r, message=FALSE, echo=FALSE, fig.height=7, fig.width=7}
+ggpairs(do.call('cbind', mntds))
+```
+
+**Figure 2.** Pairwise plots of SES.MNTD (standardized effect size of mean nearest taxon distance, or -1 * NTI), by randomization method.
+
+\newpage
+```{r, message=FALSE, echo=FALSE, fig.height=3, fig.width=3}
+library(ggplot2)
+source('~/qutil.r')
+ll <- geom_abline(slope=1, color = 'red', linetype = 'dotted') 
+qplot(mpds$taxa.labels, mntds$taxa.labels) + ll + coord_equal() +
+  qSubtitle('MNTD versus MPD', 'taxa.labels Randomization')
+qplot(mpds$richness, mntds$richness) + ll + coord_equal() +
+  qSubtitle('MNTD versus MPD', 'richness Randomization')
+qplot(mpds$frequency, mntds$frequency) + ll + coord_equal() +
+  qSubtitle('MNTD versus MPD', 'frequency Randomization')
+qplot(mpds$sample.pool, mntds$sample.pool) + ll + coord_equal() +
+  qSubtitle('MNTD versus MPD', 'sample.pool Randomization')
+qplot(mpds$phylogeny.pool, mntds$phylogeny.pool) + ll + coord_equal() +
+  qSubtitle('MNTD versus MPD', 'phylogeny.pool Randomization')
+qplot(mpds$independentswap, mntds$independentswap) + ll + coord_equal() +
+  qSubtitle('MNTD versus MPD', 'independentswap Randomization')
+qplot(mpds$trialswap, mntds$trialswap) + ll + coord_equal() +
+  qSubtitle('MNTD versus MPD', 'trialswap Randomization')
+```
+
+**Figure 3.** MNTD versus MPD for all methods. The y=x line is the red dotted line.

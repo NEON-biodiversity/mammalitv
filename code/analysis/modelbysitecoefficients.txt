@@ -1,0 +1,11 @@
+Slopes in regression of overlap by different predictors, using beta distribution for the response variable
+(Note: Bayesian and non-Bayesian methods show the same result since we aren't using informative priors)
+
+Pseudo-R2 of entire model: 0.71
+Pseudo-R2 of model with just temperature: 0.23
+Pseudo-R2 of model with species richness: 0.49
+
+mean annual temp    slope -0.55, Conf Int   (-0.8571394 -0.2507407) significantly negative
+species richness    slope -0.78, Conf Int   (-1.1601963 -0.3972737) significantly negative
+pairwise phy dist   slope 0.12, Conf Int    (-0.1905800  0.4344519) not significant
+ruggedness          slope -0.16, Conf Int   (-0.4616880  0.1371407) not significant

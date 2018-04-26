@@ -1,0 +1,827 @@
+---
+title: "Preliminary calculations of T-statistics"
+author: "Quentin D. Read"
+date: "August 23, 2016"
+output: 
+  pdf_document:
+    toc: TRUE
+---
+
+AS OF 24 AUG 2016 THIS IS NO LONGER UP TO DATE. THE "ABRIDGED" VERSION IS STILL BEING UPDATED. -Q
+
+# Modification History
+
+- 23 Aug: fixed typos
+- 22 Aug: added scatterplots and regressions vs. phylogenetic diversity metrics.
+- 19 Aug: added regressions (see Hypothesis Testing section)
+- 18 Aug: added plots by standardized effect size instead of raw data; corrected some other typos; added plots versus temperature variability; improved calculation of regional species pools using range maps downloaded from iucnredlist.org. Thanks to Mao-Ning, Sydne, and Ben for all the very helpful feedback!
+- 17 Aug: added new data; split into 2014 and 2015 analyses
+- 10 Aug: created document
+
+\newpage
+# Introduction
+
+In the EAGER grant, the proposed analyses involve calculating T-statistics, which are a set of trait variance ratios calculated at different scales analogously to F-statistics from population genetics, and comparing them to null model values. Eventually, these statistics could be used as response variables in regressions, with things like climate, topography, and species richness as predictors. Unfortunately, we do not have sufficient data for all the NEON taxa. For now, the main taxon we have is small mammals, since we were able to get the Level 0 data directly from NEON.  I calculated the T-statistics for mammal morphological traits and plant phenological traits (although the plant phenology dataset doesn't really represent the entire community). Running them for beetle traits can be done pending us getting the morphology measurements done. See below for some methodological issues that came up, and that I would like feedback on.
+
+\newpage
+# T-statistics on NEON mammal traits
+
+## Calculating T-statistics
+
+To calculate the T-statistics, I threw in all the continuous, individually measured morphological traits, which for most individuals are just body weight and hind foot length. On some other individuals, they measured tail length, ear length, and total body length. The T-statistics can be calculated with a couple of different assumptions. The $T_{IP/IC}$ statistic is the same for both assumptions, but the $T_{IC/IR}$ statistic depends on how the "regional species pool" is defined. I defined the community as a single NEON site in both cases (although there might be multiple spatially separated trapping grids at each site). That is open to possible change later, if people think that is an incorrect aggregation. For the regional species pool definition, the default is to set all the individuals from all sites as a single regional species pool (so that any species could disperse to any site). That seemed a little unrealistic to me, and it also leads to extremely long computing times for the null models if you want to run a lot of iterations. ~~So I decided to use the "domains" as regional species pools. Unfortunately some of the sites are the only site in their domain, but other domains have 3 sites. I think this is decent for now, but a possibly better way of doing it would be to get some external data on what mammal species have ranges overlapping each of the NEON sites, and somehow generating fake individual data for a regional species pool based on the means and standard deviations of different traits that we get from other external data sources. If this seems like a dumb idea, please let me know!~~
+
+***Updated 18 Aug:*** I used range maps from iucnredlist.org to find all the mammal species whose ranges overlapped each of the NEON sites. The regional species pools generated in this way end up having quite a bit more species than the local community, and more species than the regional pools that I got from the domains, so I think this is a better method. I don't think the results look qualitatively very different depending on exactly how the regional species pool is defined, but it is probably good to use the most realistic regional species pool possible.
+
+I did an initial calculation of the T-statistics, which basically just followed the defaults and examples given in the *cati* package documentation. I only used a few permutations for the null model for now. Please advise what the standard number would be. In addition, I've split it up into 2014 and 2015 for mammals, because I felt it was inappropriate to pool across years, although I did pool across multiple sampling bouts within a year.
+
+```{r, tidy = TRUE, message = FALSE, warning = FALSE}
+setwd('~/GitHub/NEON')
+library(cati)
+
+# Load neon data
+load('allorganismal_latest.r') # Organismal data
+load('allsiteplot2016Jun21.r') # Site covariates
+
+# Clean mammal data to get just adults.
+# Take the median value of the traits for each individual if it was recaptured
+library(dplyr)
+library(lubridate)
+mam_capture <- mutate(mam_capture, 
+                      individualandtag = pmin(as.character(individualID), as.character(tagID), na.rm=TRUE),
+                      year = year(date))
+
+mam_noID <- mam_capture[mam_capture$individualandtag=='', c('year', 'siteID','taxonID','family', 'individualandtag','hindfootLength','earLength','tailLength','totalLength','weight','sex','lifeStage')]
+
+mam_grp <- filter(mam_capture, individualandtag != '') %>%
+  group_by(year, siteID, taxonID, family, individualandtag)
+
+mam_byindiv <- summarize_at(mam_grp, vars(hindfootLength, earLength, tailLength, totalLength, weight), median, na.rm=TRUE)
+mam_byindiv_class <- do(mam_grp, data.frame(sex = .$sex[1], lifeStage = names(sort(table(.$lifeStage),decreasing=TRUE))[1]))
+
+mam_byindiv <- cbind(as.data.frame(mam_byindiv), as.data.frame(mam_byindiv_class[,c('sex', 'lifeStage')]))                  
+mam_byindiv <-rbind(mam_byindiv, mam_noID)
+
+# Merge covariates with mammal data for plotting
+mam_capture_sitemerge <- merge(mam_byindiv, neonsitedata[,-c(3:5)], sort=FALSE, all.x=TRUE)
+mam_adults <- subset(mam_capture_sitemerge, lifeStage=='adult')
+
+# Split into years
+i2014 <- mam_adults$year == 2014
+i2015 <- mam_adults$year == 2015
+
+# Convert adult mammal data to cati format
+traits_mam14 <- mam_adults[i2014, c('hindfootLength', 'earLength', 'tailLength', 'totalLength', 'weight')]
+traits_mam15 <- mam_adults[i2015, c('hindfootLength', 'earLength', 'tailLength', 'totalLength', 'weight')]
+# ind.plot is just the siteID, and sp is the taxonID
+```
+
+Here, I calculate the T-statistics using the entire US as the regional species pool, for both 2014 and 2015.
+
+```{r, tidy=TRUE, eval=FALSE}
+# This uses the entire country as the regional species pool for each site.
+tstats_mam14 <- Tstats(traits = traits_mam14, 
+                       ind.plot = factor(mam_adults$siteID[i2014]), 
+                       sp = factor(mam_adults$taxonID[i2014]), 
+                       nperm = 999)
+tstats_mam15 <- Tstats(traits = traits_mam15, 
+                       ind.plot = factor(mam_adults$siteID[i2015]), 
+                       sp = factor(mam_adults$taxonID[i2015]), 
+                       nperm = 999)
+```
+
+Here I define domains as the regional species pool and then calculate the T-statistics again.
+```{r, tidy=TRUE, eval=FALSE}
+# Improved regional species pool with the iucn range maps
+
+iucn <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/IUCN_mammal_ranges.csv')
+mamnames <- unique(mam_capture$scientificName) 
+
+# These include taxa not identified to species as well as two additional species: Tamias alpinus and Rattus rattus.
+# Tamias alpinus should only be in California sites (although it is recorded as a single individual from Utah),
+# and Rattus rattus should be in all sites. Put all the genus-level traits into all the regional species pools.
+
+# Fortunately, only 470 rows in the mam_capture dataframe are not accounted for in IUCN.
+sum(mam_capture$scientificName %in% mamnames[!mamnames %in% iucn$binomial])
+
+(nomatchspp <- mamnames[!mamnames %in% iucn$binomial])
+nomatchspp <- nomatchspp[c(1:5,7:11,13)] # Only the ones from all sites
+
+# Include all traits from all individuals whose species id matches species at the site, 
+# plus all traits from the individuals whose species id matches species with ranges overlapping 
+# the site (this will account for a species which is at the site but outside its IUCN range)
+
+reg_pool <- list()
+
+for (site in unique(mam_capture$siteID)) {
+  iucn_spp <- as.character(iucn$binomial[iucn[,site]])
+  neon_spp <- mam_capture$scientificName[mam_capture$siteID == site]
+  regional_spp <- unique(c(iucn_spp, neon_spp, nomatchspp))
+  regional_spp_id <- unique(mam_capture$taxonID[mam_capture$scientificName %in% regional_spp])
+  reg_pool <- within(reg_pool, assign(site, value=mam_adults$taxonID %in% regional_spp_id))
+}
+
+# Edited 19 Aug. Must specify trait columns when defining regional pools.
+regpoollist_mam14_iucn <- lapply(reg_pool[sites14], function(x) mam_adults[x, c('hindfootLength', 'earLength', 'tailLength', 'totalLength', 'weight')])
+regpoollist_mam15_iucn <- lapply(reg_pool[sites15], function(x) mam_adults[x, c('hindfootLength', 'earLength', 'tailLength', 'totalLength', 'weight')])
+
+tstats_mam_regpools14iucn <- Tstats(traits = traits_mam14, 
+                                    ind.plot = factor(mam_adults$siteID[i2014]), 
+                                    sp = factor(mam_adults$taxonID[i2014]), 
+                                    reg.pool = regpoollist_mam14_iucn, 
+                                    nperm = 999)
+tstats_mam_regpools15iucn <- Tstats(traits = traits_mam15, 
+                                    ind.plot = factor(mam_adults$siteID[i2015]), 
+                                    sp = factor(mam_adults$taxonID[i2015]), 
+                                    reg.pool = regpoollist_mam15_iucn, 
+                                    nperm = 999)
+```
+
+The T-stats object that is returned by this function contains a T-statistic for each trait/site combination, and for each of the levels of organization. Here, we have 15 sites and 5 traits, each of which has a $T_{IP/IC}$ (ratio of individual within population variability to individual within community variability), $T_{IC/IR}$ (ratio of individual within community to individual within region variability), and $T_{PC/PR}$ (same as preceding but averaged across populations instead of using individual values). Each T-statistic is output in a 15x5 matrix. In addition, the object contains arrays with null distributions of the T-statistics. Since I set 999 permutations, the arrays are 999x5x15 in size (not sure why the dimensions are in a different order). The raw variances used to calculate the T-statistics are also returned. For example, *var_IP* is a 116x5 matrix because there are 116 population/site combinations, and 5 traits. The variances from the null models are returned in correspondingly sized arrays (such as 999x5x116). Note that two different types of null models are run: *NM1* is used to get the null distribution of $T_{IP/IC}$ by randomizing individuals within communities, and *NM2* is used to get the null distribution of the other indices by randomizing individuals within regions (I believe that is correct). 
+
+The $T_{IP/IC}$ matrix for the 2015 mammals, using IUCN-based regional species pools, is shown here; note that the site and trait combinations that don't have any values are shown as NaN.
+
+```{r, tidy=TRUE}
+load('C:/Users/Q/Dropbox/neon/code/tstatsmam.r') 
+# Loaded here because code was run separately from the creation of this PDF.
+tstats_mam_regpools15iucn$Tstats$T_IP.IC
+```
+
+[Click to return to table of contents](#top)
+
+\newpage
+
+## Visualizing T-statistics and relationships
+
+Here are some of the default visualizations of the T-statistics. Note that there are a few outliers, so most of the values are hard to see. These built-in plotting methods are decent, but it will be better to use our own plots. The next step I want to do is to use a mammal phylogeny to plot the T-statistics versus phylogenetic diversity metrics and then throw it in as a predictor in the regression.
+
+```{r, echo=FALSE, message=FALSE, fig.height=6}
+plot(tstats_mam_regpools14iucn, type = "simple")
+```
+**Figure 1a.** 2014 mammal T-statistics, using regional pools. Includes individual sites as well as the null distributions' confidence intervals.
+
+```{r, echo=FALSE, message=FALSE, fig.height=6}
+plot(tstats_mam_regpools15iucn, type = "simple")
+```
+**Figure 1b.** 2015 mammal T-statistics, using regional pools. Includes individual sites as well as the null distributions' confidence intervals.
+
+
+```{r, echo=FALSE, message=FALSE, fig.height=7, fig.width=7}
+# Custom theme (from rasterVis package)
+require(rasterVis)
+
+my.theme <- BuRdTheme()
+# Customize the colorkey
+my.ckey <- list(col = my.theme$regions$col)
+
+# Heat map of standardized effect sizes of TIPIC, as compared to the null model, on a site x trait matrix.
+
+levelplot(t(ses(tstats_mam_regpools14iucn$Tstats$T_IP.IC,tstats_mam_regpools14iucn$Tstats$T_IP.IC_nm)$ses), 
+          colorkey = my.ckey, par.settings = my.theme,border = "black")
+```
+
+**Figure 2a.** Heat map showing standardized effect sizes of 2014 mammal $T_{IP/IC}$ by site and trait combination (compared to the null model). Missing values are blank white squares. Red colors indicate higher than expected values, and blue colors indicate lower than expected values.
+
+```{r, echo=FALSE, message=FALSE, fig.height=7, fig.width=7}
+# Custom theme (from rasterVis package)
+require(rasterVis)
+
+my.theme <- BuRdTheme()
+# Customize the colorkey
+my.ckey <- list(col = my.theme$regions$col)
+
+# Heat map of standardized effect sizes of TIPIC, as compared to the null model, on a site x trait matrix.
+
+levelplot(t(ses(tstats_mam_regpools15iucn$Tstats$T_IP.IC,tstats_mam_regpools15iucn$Tstats$T_IP.IC_nm)$ses), 
+          colorkey = my.ckey, par.settings = my.theme,border = "black")
+```
+
+**Figure 2b.** Heat map showing standardized effect sizes of 2015 mammal $T_{IP/IC}$ by site and trait combination (compared to the null model). Missing values are blank white squares. Red colors indicate higher than expected values, and blue colors indicate lower than expected values.
+
+[Click to return to table of contents](#top)
+
+\newpage
+Here are some scatterplots of T-statistics versus the different factors that the grant proposal lists in the hypotheses as possibly being related to them. I've converted the T-statistics to standardized effect sizes, with the corresponding confidence interval of the null distribution, so you can see whether each statistic falls inside, above, or below the interval. As a reminder, things like climate, species richness, and habitat heterogeneity were proposed as being potential drivers. I've plotted mean annual temperature, within-year temperature variability (seasonality), among-year temperature variability, the Chao1 species richness estimator for mammals, and Terrain Ruggedness Index as the three different predictors in the following figures. ~~Note from 18 Aug: the null models did not compute properly for some of the T-stats for some traits that had a lot of missing values, which means that the SES did not return either.~~ (problem fixed 19 Aug)
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+source('~/GitHub/NEON/code/analysis/tstat2longform.r')
+library(ggplot2)
+
+# Run function on example data
+tm_long14 <- tstat2longform_ses(tstats_mam_regpools14iucn)
+
+# Plot the t-statistics versus climate variables.
+
+tm_clim14 <- merge(tm_long14, neonsitedata)
+
+source('~/GitHub/NEON/code/bioclimnames.r')
+
+pttemp <- ggplot(subset(tm_clim14, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=bio1)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=bio1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = parse(text=bioclimnames[1])) +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+source('~/qutil.r')
+
+pttemp +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2014 NEON mammals versus MAT', 'with 95% CI of null distributions')
+
+
+```
+**Figure 3a.** Scatterplots of 2014 mammal T-statistics, plotted as a function of mean annual temperature. Null distributions are included as light blue bars. The dotted line is at 1, which I think should be the "null" value of the ratios.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+
+tm_long15 <- tstat2longform_ses(tstats_mam_regpools15iucn)
+
+# Plot the t-statistics versus climate variables.
+
+tm_clim15 <- merge(tm_long15, neonsitedata)
+
+pttemp <- ggplot(subset(tm_clim15, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=bio1)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=bio1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = parse(text=bioclimnames[1])) +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+pttemp +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus MAT', 'with 95% CI of null distributions')
+
+
+```
+**Figure 3b.** Scatterplots of 2015 mammal T-statistics as a function of mean annual temperature. Set up as in Fig. 3a.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+pttempseas <- ggplot(subset(tm_clim14, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=bio4)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=bio4), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = bioclimnames[4]) +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+pttempseas +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2014 NEON mammals versus temperature seasonality', 'with 95% CI of null distributions')
+```
+**Figure 4a.** Scatterplots of 2014 mammal T-statistics, plotted as a function of temperature seasonality. Null distributions are included as light blue bars. The dotted line is at 1, which I think should be the "null" value of the ratios.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+pttempseas <- ggplot(subset(tm_clim15, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=bio4)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=bio4), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = bioclimnames[4]) +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+pttempseas +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus temperature seasonality', 'with 95% CI of null distributions')
+```
+**Figure 4b.** Scatterplots of 2015 mammal T-statistics as a function of temperature seasonality. Set up as in Fig. 3a.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+pttempvar <- ggplot(subset(tm_clim14, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=cv_bio1)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=cv_bio1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Among-year CV temperature') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+pttempvar +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2014 NEON mammals versus among-year temperature variability', 'with 95% CI of null distributions')
+```
+**Figure 5a.** Scatterplots of 2014 mammal T-statistics, plotted as a function of interannual temperature variability. Null distributions are included as light blue bars. The dotted line is at 1, which I think should be the "null" value of the ratios.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+pttempvar <- ggplot(subset(tm_clim15, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=cv_bio1)) + 
+  facet_grid(stat ~ trait, scales = 'free') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=cv_bio1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Among-year CV temperature') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+pttempvar +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  qSubtitle('T-statistics for 2015 NEON mammals versus among-year temperature variability', 'with 95% CI of null distributions')
+```
+**Figure 5b.** Scatterplots of 2015 mammal T-statistics as a function of interannual temperature variability. Set up as in Fig. 3a.
+
+[Click to return to table of contents](#top)
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+# Plot the t-statistics versus richness.
+
+# Mammals have abundance so we use the Chao1 estimator.
+
+library(lubridate)
+library(plyr)
+library(reshape2)
+mam_capture <- transform(mam_capture, gridID = substr(trapCoordinate,1,1))
+
+chao1mammal14 <- ddply(subset(mam_capture, year(date) == 2014), .(siteID), function(x) {
+  xmat <- dcast(x, formula = gridID ~ taxonID)[,-1] # Get rid of date col, use number of rows as abundance
+  S_obs <- ncol(xmat)
+  f1 <- sum(apply(xmat, 2, sum) == 1)
+  f2 <- sum(apply(xmat, 2, sum) == 2)
+  return(data.frame(chao1 = S_obs + (f1 * (f1 - 1)) / (2 * (f2 + 1))))
+})
+
+tm_clim14 <- merge(tm_clim14, chao1mammal14)
+
+ptchao <- ggplot(subset(tm_clim14, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=chao1)) + 
+  facet_grid(stat ~ trait, scales = 'free_y') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=chao1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Chao1 Richness Estimator') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+ptchao +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2014 NEON mammals vs. richness', 'with 95% CI of null distributions')
+
+```
+**Figure 6a.** Scatterplots of 2014 mammal T-statistics, plotted as a function of estimated species richness, set up just like the previous figure.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+# Plot the t-statistics versus richness.
+
+# Mammals have abundance so we use the Chao1 estimator.
+
+chao1mammal15 <- ddply(subset(mam_capture, year(date) == 2015), .(siteID), function(x) {
+  xmat <- dcast(x, formula = gridID ~ taxonID)[,-1] # Get rid of date col, use number of rows as abundance
+  S_obs <- ncol(xmat)
+  f1 <- sum(apply(xmat, 2, sum) == 1)
+  f2 <- sum(apply(xmat, 2, sum) == 2)
+  return(data.frame(chao1 = S_obs + (f1 * (f1 - 1)) / (2 * (f2 + 1))))
+})
+
+tm_clim15 <- merge(tm_clim15, chao1mammal15)
+
+ptchao <- ggplot(subset(tm_clim15, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=chao1)) + 
+  facet_grid(stat ~ trait, scales = 'free_y') +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=chao1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Chao1 Richness Estimator') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+ptchao +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2015 NEON mammals vs. richness', 'with 95% CI of null distributions')
+
+```
+**Figure 6b.** Scatterplots of 2015 mammal T-statistics, plotted as a function of estimated species richness, set up just like the previous figure.
+
+[Click to return to table of contents](#top)
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=7}
+spatialstat <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/NEON_spatial_stats.csv')
+neonplotdata <- cbind(neonplotdata, spatialstat)
+
+library(dplyr)
+spatialmeans <- neonplotdata %>% group_by(siteID) %>% 
+  dplyr::summarize(ruggedness = mean(tri, na.rm=TRUE), roughness = mean(roughness, na.rm=TRUE)) %>% as.data.frame
+
+tm_clim14 <- merge(tm_clim14, spatialmeans)
+
+ptrugg <- ggplot(subset(tm_clim14, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=ruggedness)) + 
+  facet_grid(stat ~ trait, scales = 'free_y') +
+  geom_segment(aes(y = ci_min, yend = ci_max, x=ruggedness, xend=ruggedness), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(x=ruggedness, y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Terrain Ruggedness Index') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+ptrugg +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() + xlim(0,12) +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2014 NEON mammals vs. ruggedness', 'with 95% CI of null distributions')
+```
+
+**Figure 7a.** Scatterplots of 2014 mammal T-statistics, plotted as a function of terrain ruggedness index, set up just like the previous figure.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=7}
+tm_clim15 <- merge(tm_clim15, spatialmeans)
+
+ptrugg <- ggplot(subset(tm_clim15, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=ruggedness)) + 
+  facet_grid(stat ~ trait, scales = 'free_y') +
+  geom_segment(aes(y = ci_min, yend = ci_max, x=ruggedness, xend=ruggedness), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(x=ruggedness, y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Terrain Ruggedness Index') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+ptrugg +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() + xlim(0,23) +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2015 NEON mammals vs. ruggedness', 'with 95% CI of null distributions')
+```
+
+**Figure 7b.** Scatterplots of 2015 mammal T-statistics, plotted as a function of terrain ruggedness index, set up just like the previous figure.
+
+[Click to return to table of contents](#top)
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=7}
+load('C:/Users/Q/Dropbox/neon/code/mammalPDobject.r')
+
+tm_clim14 <- merge(tm_clim14, mammalPD)
+
+ptmpd <- ggplot(subset(tm_clim14, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=mpd.obs.z2014)) + 
+  facet_grid(stat ~ trait, scales = 'free_y') +
+  geom_segment(aes(y = ci_min, yend = ci_max, x=mpd.obs.z2014, xend=mpd.obs.z2014), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(x=mpd.obs.z2014, y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'MPD standardized effect size') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+ptmpd +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() + xlim(0,12) +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2014 NEON mammals vs. phylogenetic diversity', 'with 95% CI of null distributions')
+
+```
+
+**Figure 8a.** Scatterplots of 2014 mammal T-statistics, plotted as a function of phylogenetic diversity (standardized effect size of MPD, which is equal to -NRI), set up like the previous figure. I used the "richness" null model to calculate this index. Later, I will look at the correlations among indices calculated with different methods to check whether or not it matters which is used.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=7}
+tm_clim15 <- merge(tm_clim15, mammalPD)
+
+ptmpd <- ggplot(subset(tm_clim15, trait %in% c('hindfootLength', 'weight', 'totalLength')), aes(x=mpd.obs.z2015)) + 
+  facet_grid(stat ~ trait, scales = 'free_y') +
+  geom_segment(aes(y = ci_min, yend = ci_max, x=mpd.obs.z2015, xend=mpd.obs.z2015), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(x=mpd.obs.z2015, y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'MPD standardized effect size') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+ptmpd +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() + xlim(0,12) +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2015 NEON mammals vs. phylogenetic diversity', 'with 95% CI of null distributions')
+```
+
+**Figure 8b.** Scatterplots of 2015 mammal T-statistics, plotted as a function of phylogenetic diversity (standardized effect size of MPD, which is equal to -NRI), set up like the previous figure.
+
+[Click to return to table of contents](#top)
+
+\newpage
+## Hypothesis testing
+
+I decided to run simple multiple regressions with two-way interactions. I only used 2015 data because there are 24 usable sites. Climate data is missing for one Alaskan site (I can probably find it elsewhere). I standardized all the predictor variables, fit the models with all main effects and two-way interactions, and then ran a very "stupid" model selection procedure: fitting every submodel and ranking them by AICc. I fit the models for body weight and hind foot length because they are the traits with the most records across all sites. Since $T_{IP/IC}$ and $T_{IC/IR}$ were the statistics mentioned in the proposal, I used them as the response variables. I did some very basic diagnostics such as plotting the residuals (not shown here). They look OK, but obviously we will need to be more rigorous in the future, especially if we look at more sophisticated models. I would be interested in what people think about ways to improve these regressions. Should we treat some of the effects as random effects?
+
+### T_IP/IC of body weight
+
+```{r, tidy=TRUE, message=FALSE, warning=FALSE}
+library(MuMIn)
+
+# Set up predictor and response data frame
+tipic_wtlmdat <- subset(tm_clim15, stat=='T_IP.IC' & !is.na(t) & !is.na(bio1) & trait=='weight', select=c(t, bio1, bio4, cv_bio1, chao1, mpd.obs.z2015, ruggedness))
+
+# Standardize the predictor variables
+tipic_wtlmdat <- mutate_each(tipic_wtlmdat, funs((. - mean(.))/sd(.)), bio1:ruggedness)
+
+# Estimate full linear model to 2nd order interactions
+tipic_wtlm <- lm(t ~ .*., data = tipic_wtlmdat, na.action = 'na.pass')
+
+# "Stupid" model selection to find best model
+# Must limit the number of terms in the model to 7.
+tipic_wtdredge <- dredge(tipic_wtlm, m.lim = c(0,7))
+
+head(tipic_wtdredge)
+
+tipic_wtbest <- get.models(tipic_wtdredge, subset = delta < 5)
+
+summary(tipic_wtbest[[1]])
+```
+
+**Take-home message**: The model with only richness as a main effect was selected as the best model. That shows that there is a positive relationship between mammal species richness and intraspecific variation (of body weight), which is contrary to the prediction in Fig. 1a of the EAGER grant. However, the Violle et al. paper gives theoretical predictions for both a positive and a negative correlation, which is very interesting. According to Violle, a relationship like this would favor the "individual variation theory" over more traditional "niche theory." Increased intraspecific variation enables coexistence of a high number of species because it enables more individuals, across many species, to either pass through microenvironmental filters or to avoid competition.
+
+### T_IP/IC of hind foot length
+
+```{r, tidy=TRUE, message=FALSE, warning=FALSE}
+# Set up predictor and response data frame
+tipic_hflmdat <- subset(tm_clim15, stat=='T_IP.IC' & !is.na(t) & !is.na(bio1) & trait=='hindfootLength', select=c(t, bio1, bio4, cv_bio1, chao1, mpd.obs.z2015, ruggedness))
+
+# Standardize the predictor variables
+tipic_hflmdat <- mutate_each(tipic_hflmdat, funs((. - mean(.))/sd(.)), bio1:ruggedness)
+
+# Estimate full linear model to 2nd order interactions
+tipic_hflm <- lm(t ~ .*., data = tipic_hflmdat, na.action = 'na.pass')
+
+# "Stupid" model selection to find best model
+tipic_hfdredge <- dredge(tipic_hflm, m.lim = c(0,7))
+
+head(tipic_hfdredge)
+
+# Null model is the best, but delta of ruggedness-only model is 1.
+tipic_hfbest <- get.models(tipic_hfdredge, subset = delta < 5)
+
+#summary(tipic_hfbest[[1]])
+```
+
+**Take-home message**: There are no significant predictors of the intraspecific variation within communities (of hind foot length). If anything, there might be a relationship with ruggedness, but it doesn't look like anything. That would correspond to the prediction shown in the proposal Fig. 1c. 
+
+### T_IC/IR of body weight
+
+```{r, tidy=TRUE, message=FALSE, warning=FALSE}
+# Set up predictor and response data frame
+ticir_wtlmdat <- subset(tm_clim15, stat=='T_IC.IR' & !is.na(t) & !is.na(bio1) & trait=='weight', select=c(t, bio1, bio4, cv_bio1, chao1, mpd.obs.z2015, ruggedness))
+
+# Standardize the predictor variables
+ticir_wtlmdat <- mutate_each(ticir_wtlmdat, funs((. - mean(.))/sd(.)), bio1:ruggedness)
+
+# Estimate full linear model to 2nd order interactions
+ticir_wtlm <- lm(t ~ .*., data = ticir_wtlmdat, na.action = 'na.pass')
+
+# "Stupid" model selection to find best model
+ticir_wtdredge <- dredge(ticir_wtlm, m.lim = c(0,7))
+
+head(ticir_wtdredge)
+
+ticir_wtbest <- get.models(ticir_wtdredge, subset = delta < 5)
+
+summary(ticir_wtbest[[1]])
+```
+
+**Take-home message**: Our predictors explain a lot more of the variation in body weight $T_{IC/IR}$, which indicates the strength of external filters in driving intraspecific trait variation (ratio of variation of traits among individuals within a community, to variation of traits among individuals in the regional species pool). The main effects are positive for predictors that have to do with heterogeneity, which matches the prediction in Fig. 1d. In addition, the coefficient associated with phylogenetic diversity is negative, which could mean that external filters are stronger where phylogenetic diversity is less (what might that mean?) I am not sure how to interpret the interaction effects, but it might be interesting that temporal variation in temperature seems to have a different effect on ITV in spatially heterogeneous areas versus spatially homogeneous areas.
+
+### T_IC/IR of hind foot length
+
+```{r, tidy=TRUE, message=FALSE, warning=FALSE}
+# Set up predictor and response data frame
+ticir_hflmdat <- subset(tm_clim15, stat=='T_IC.IR' & !is.na(t) & !is.na(bio1) & trait=='hindfootLength', select=c(t, bio1, bio4, cv_bio1, chao1, mpd.obs.z2015, ruggedness))
+
+# Standardize the predictor variables
+ticir_hflmdat <- mutate_each(ticir_hflmdat, funs((. - mean(.))/sd(.)), bio1:ruggedness)
+
+# Estimate full linear model to 2nd order interactions
+ticir_hflm <- lm(t ~ .*., data = ticir_hflmdat, na.action = 'na.pass')
+
+# "Stupid" model selection to find best model
+ticir_hfdredge <- dredge(ticir_hflm, m.lim = c(0,7))
+
+head(ticir_hfdredge)
+
+ticir_hfbest <- get.models(ticir_hfdredge, subset = delta < 5)
+
+summary(ticir_hfbest[[1]])
+```
+
+**Take-home message**: The predictors related to heterogeneity are not showing up in the model for hind foot length $T_{IC/IR}$. However we see species richness is associated with higher external filter strength. I am not sure how to interpret this result. Perhaps higher species diversity is possible when there is higher individual variation in the regional pool.
+
+[Click to return to table of contents](#top)
+
+\newpage
+# T-statistics on NEON plant phenological traits
+
+## Calculating T-statistics
+
+These T-statistics are probably going to be problematic, because the plants measured don't really represent a community; instead, they are individuals taken from just a few species, at most 3 per site, selected based on certain criteria and measured intensively for phenology. Overall, I would say that means these statistics are pretty meaningless, so I did not bother with running regressions on them. However, I calculated them anyway just in the interest of completeness. In future years, it might be possible to improve them because they are going to start measuring phenology on larger numbers of species (but fewer numbers within each species). I selected the date of onset of the six phenophases as the "traits" to use for this calculation. I think those are relatively legitimate traits to use. For this dataset, only 2014 is available. For reference, the six phenophases are as follows:
+
+1. Budburst
+2. Leaf expansion
+3. Adult leaves
+4. Open flowers
+5. Leaf senescence/coloring
+6. Leaf fall
+
+```{r, message=FALSE, echo=FALSE, warning=FALSE}
+
+phen_fg <- read.csv('C:/Users/Q/Dropbox/neon/data/pheno_plants_funcgrp.csv')
+phe_status <- merge(phe_status, phen_fg[,-1], sort=FALSE, all.x=TRUE, all.y=FALSE)
+
+# Convert phenophase names to comparable numbers.
+
+phase_key <- c('Breaking leaf buds'=1, 'Colored leaves'=5, 'Emerging needles'=1, 'Falling leaves'=6, 'Increasing leaf size'=2, 'Initial growth'=1, 'Leaves'=3, 'Open flowers'=4, 'Open pollen cones'=4, 'Young leaves'=2, 'Young needles'=2)
+
+phe_status$Key <- phase_key[phe_status$phenophaseName]
+
+# Convert phenophase percentage classes to the midpoints of those classes
+intensity_percentages <- c('< 5%'=0.025,
+                           '5-24%'=0.15,
+                           '<25%'=0.125,
+                           '25-49%'=0.375,
+                           '50-74%'=0.625,
+                           '75-94%'=0.85,
+                           '>= 95%'=0.975)
+
+# Convert phenophase raw number classes to the midpoints of those classes
+intensity_numbers <- c('< 3'=1,
+                       '3 to 10'=6.5,
+                       '11 to 100'=55.5,
+                       '101 to 1000'=550.5,
+                       '1001 to 10000'=5500.5)
+
+# Scale this also to a zero-one scale by dividing by its max.
+intensity_numbers <- intensity_numbers/max(intensity_numbers)
+
+# Convert the categorical values to numerical.
+pctvalues <- intensity_percentages[phe_status$phenophaseIntensity]
+numvalues <- intensity_numbers[phe_status$phenophaseIntensity]
+
+# Make a new column in phe_status that includes all the numerical values.
+phe_status$intensityValue <- pmin(pctvalues, numvalues, na.rm=TRUE)
+
+# Find the onset, end, and length for the phenophases for each individual (is it possible to do this for intensity)?
+
+library(lubridate)
+library(plyr)
+
+phe_df <- phe_status[,c('domainID','siteID','plotID','date','dayOfYear','individualID','taxonID','func_grp','phenophaseStatus','Key','intensityValue')]
+
+phenotable <- ddply(phe_df, .(siteID, individualID, taxonID, func_grp, year(date)), function(x) {
+  onset <- rep(NA, 6)
+  final <- rep(NA, 6)
+  
+  for (k in 1:6) {
+    days_k <- x$dayOfYear[x$Key==k & x$phenophaseStatus=='yes']
+    onset[k] <- ifelse(length(days_k>0), min(days_k), NA)
+    final[k] <- ifelse(length(days_k>0), max(days_k), NA)
+  }
+  names(onset) <- paste('onset', 1:6, sep='_')
+  names(final) <- paste('end', 1:6, sep='_')
+  
+  return(c(onset, final))
+})
+
+library(reshape2)
+phenotable_onsets <- melt(phenotable[,1:11], id.vars=1:5, value.name='day_onset')
+phenotable_ends <- melt(phenotable[,c(1:5, 12:17)], id.vars=1:5, value.name='day_end')
+phenotable_onsets$phase <- sapply(strsplit(as.character(phenotable_onsets$variable), '_'), '[', 2)
+phenotable_ends$phase <- sapply(strsplit(as.character(phenotable_ends$variable), '_'), '[', 2)
+
+phenotable_long <- cbind(phenotable_onsets, day_end=phenotable_ends$day_end)
+
+# Get a single number to be the individual ID for each species.
+indivnos <- ddply(phenotable_long, .(siteID), function(x) data.frame(siteID=x$siteID, individualID=x$individualID, indivno=as.numeric(factor(x$individualID))))
+phenotable_long$indivno <- indivnos$indivno[match(phenotable_long$individualID, indivnos$individualID)]
+
+phenotable_long$phase_length <- with(phenotable_long, day_end - day_onset)
+names(phenotable_long)[5] <- 'year'
+
+# Calculate variability in different aspects of phenology
+library(plyr)
+phenotable_sd <- ddply(phenotable_long, .(siteID, taxonID, func_grp, year, phase), colwise(sd, .(day_onset, day_end, phase_length), na.rm=TRUE))
+phenotable_n <- ddply(phenotable_long, .(siteID, taxonID, func_grp, year, phase), colwise(function(x) sum(!is.na(x)), .(day_onset, day_end, phase_length)))
+phenotable_sd <- transform(phenotable_sd, 
+                           n_onset = phenotable_n$day_onset,
+                           n_end = phenotable_n$day_end,
+                           n_phase_length = phenotable_n$phase_length
+)
+
+# add environmental covariates to phenotable_sd
+phenotable_sd <- merge(phenotable_sd, neonsitedata, sort=FALSE, all.x=TRUE, all.y=FALSE)
+```
+
+Here I put the previously calculated phenotable into cati format and calculate the phenological trait T-statistics using both assumptions about regional species pools.
+
+```{r, tidy=TRUE, eval=FALSE}
+# Get only valid records
+phenotable_valid <- subset(phenotable, !is.na(taxonID) & taxonID!='')
+
+# Figure out where there are replicated individuals.
+phenotable_valid <- subset(phenotable_valid, !(is.na(onset_1) & is.na(onset_2) & is.na(onset_3) & is.na(onset_4) & is.na(onset_5) & is.na(onset_6)))
+nindivs <- table(phenotable_valid$individualID)
+
+phenotable_valid[phenotable_valid$individualID %in% names(nindivs[nindivs>1]), ]
+
+# Get rid of the duplicated ones that do not have a budbreak date, which should take care of the rest.
+toremove <- row.names(phenotable_valid[phenotable_valid$individualID %in% names(nindivs[nindivs>1]) & is.na(phenotable_valid$onset_1), ])
+phenotable_valid <- phenotable_valid[!(row.names(phenotable_valid) %in% toremove),]
+
+# Use only the onset dates for the phenological traits
+# Put in cati format
+traits_phe <- phenotable_valid[,c('onset_1','onset_2','onset_3','onset_4','onset_5','onset_6')]
+
+# Calculate T-statistics with the entire country as a regional species pool.
+tstats_phe <- Tstats(traits = traits_phe, ind.plot = factor(phenotable_valid$siteID), sp = factor(phenotable_valid$taxonID), nperm = 999, print=FALSE)
+
+# Get a regional species pool for each site, as defined by the "domain" that it's in.
+domaincombs <- unique(neonplotdata[,c('domainID','siteID')])
+phenotable_valid <- merge(phenotable_valid, domaincombs, all.x=TRUE, sort=FALSE)
+
+phe_domains <- split(traits_phe, phenotable_valid$domainID)
+regpoollist_phe <- list()
+for (i in levels(factor(phenotable_valid$siteID))) 
+  regpoollist_phe[[length(regpoollist_phe)+1]] <- phe_domains[[domaincombs$domainID[domaincombs$siteID==i]]]
+
+# Calculate the T-statistics with domains as regional species pools.
+tstats_phe_regpools <- Tstats(traits = traits_phe, ind.plot = factor(phenotable_valid$siteID), sp = factor(phenotable_valid$taxonID), reg.pool = regpoollist_phe, nperm = 999, print=FALSE)
+```
+
+[Click to return to table of contents](#top)
+
+\newpage
+
+## Visualizing T-statistics and relationships
+
+Below are visualizations of the T-statistics for phenology.
+
+```{r, echo=FALSE, message=FALSE, fig.height=6}
+load('C:/Users/Q/Dropbox/neon/code/tstatsphe.r')
+plot(tstats_phe_regpools, type = "simple")
+```
+**Figure 9.** 2014 phenology T-statistics, using regional pools. Includes individual sites as well as the null distributions' confidence intervals.
+
+```{r, echo=FALSE, message=FALSE, fig.height=7, fig.width=7}
+# Heat map of standardized effect sizes of TIPIC, as compared to the null model, on a site x trait matrix.
+levelplot(t(ses(tstats_phe_regpools$Tstats$T_IP.IC,tstats_phe_regpools$Tstats$T_IP.IC_nm)$ses), 
+          colorkey = my.ckey, par.settings = my.theme,border = "black")
+```
+
+**Figure 10.** Heat map showing standardized effect sizes of 2015 plant phenology $T_{IP/IC}$ by site and trait combination (compared to the null model). Missing values are blank white squares. Red colors indicate higher than expected values, and blue colors indicate lower than expected values.
+
+[Click to return to table of contents](#top)
+
+\newpage
+Below are scatterplots relating the phenology T-statistics to the different hypothesized drivers.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+tp_long <- tstat2longform_ses(tstats_phe_regpools)
+
+# Plot the t-statistics versus climate variables.
+
+tp_clim <- merge(tp_long, neonsitedata)
+
+lab_phe <- labeller(trait = c('onset_1'='Budburst','onset_4'='Flowering','onset_5'='Senescence'))
+
+pttemp <- ggplot(subset(tp_clim, trait %in% c('onset_1', 'onset_4', 'onset_5')), aes(x=bio1)) + 
+  facet_grid(stat ~ trait, scales = 'free', labeller=lab_phe) +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=bio1), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = parse(text=bioclimnames[1])) +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+pttemp +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2014 NEON phenology versus MAT', 'with 95% CI of null distributions')
+
+
+```
+**Figure 11.** Scatterplots of 2014 plant phenology T-statistics for budburst, flowering, and senescence, plotted as a function of mean annual temperature. Null distributions are included as light blue bars. The dotted line is at 1, which I think should be the "null" value of the ratios.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7}
+# Run bias-corrected Chao2 richness estimator for replicated presence data
+chao2 <- ddply(subset(ppc_400m2, year(date) == 2014), .(siteID), function(x) {
+  xmat <- dcast(x, formula = date ~ taxonID, value.var='targetTaxaPresent')[,-1] > 0 # Get rid of date col, ignore entries greater than 1
+  S_obs <- ncol(xmat)
+  m <- nrow(xmat)
+  n_sites <- apply(xmat, 2, sum)
+  q1 <- sum(n_sites == 1)
+  q2 <- sum(n_sites == 2)
+  return(data.frame(S_obs = S_obs, chao2 = S_obs + (m - 1) / m * (q1 * (q1 - 1)) / (q2 * (q2 + 1))))
+})
+
+tp_clim <- merge(tp_clim, chao2)
+
+ptchao <- ggplot(subset(tp_clim, trait %in% c('onset_1', 'onset_4', 'onset_5')), aes(x=chao2)) + 
+  facet_grid(stat ~ trait, scales = 'free_y', labeller=lab_phe) +
+  geom_segment(aes(y = ci_min, yend = ci_max, xend=chao2), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Chao1 Richness Estimator') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+ptchao +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2014 NEON phenology vs. richness', 'with 95% CI of null distributions')
+
+```
+**Figure 12.** Scatterplots of 2015 plant phenology T-statistics, plotted as a function of estimated species richness, set up just like the previous figure.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=7}
+tp_clim <- merge(tp_clim, spatialmeans)
+
+ptrugg <- ggplot(subset(tp_clim, trait %in% c('onset_1', 'onset_4', 'onset_5')), aes(x=ruggedness)) + 
+  facet_grid(stat ~ trait, scales = 'free_y', labeller=lab_phe) +
+  geom_segment(aes(y = ci_min, yend = ci_max, x=ruggedness, xend=ruggedness), alpha = 0.5, size = 1.5, color = 'skyblue') +
+  geom_point(aes(x=ruggedness, y = t), size = 1.5) +
+  labs(y = 'T-statistic', x = 'Terrain Ruggedness Index') +
+  theme_minimal() + theme(panel.border = element_rect(fill='transparent'))
+
+ptrugg +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'midnightblue', size=0.9) +
+  #scale_y_log10() +
+  #labs(y = parse(text = 'paste(\"log\"[10], \" T-statistic\")')) +
+  qSubtitle('T-statistics for 2014 NEON phenology vs. ruggedness', 'with 95% CI of null distributions')
+```
+
+**Figure 13.** Scatterplots of 2015 plant phenology T-statistics, plotted as a function of terrain ruggedness index, set up just like the previous figure.
+
+
+[Click to return to table of contents](#top)

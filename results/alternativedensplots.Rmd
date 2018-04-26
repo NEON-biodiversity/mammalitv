@@ -1,0 +1,308 @@
+---
+title: "Alternative density plots"
+author: "Quentin D. Read"
+date: "January 17, 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+At the NEON meeting, John suggested some alternative ways of plotting the density plots in Figure 3 of our MS. Right now, the normalized density curves are shown. The curves are colored by species, which produces a beautiful graph. However, it may be misleading because there is no distinction between common and rare species. We thought of three different ways of showing the different relative abundances, which are:
+
+* "un-normalize" the curves so that the height of the curve corresponds to the relative abundance.
+* make the transparency value of each curve fill correspond to the relative abundance.
+* make the color of each curve correspond to the relative abundance.
+
+Below are examples of each type of graph.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+
+setwd('C:/Users/Q/Documents/GitHub/NEON/')
+
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(reshape2)
+library(extrafont)
+
+fp <- 'C:/Users/Q/Dropbox/neon/code/overlapstat/12Jan'
+source('code/analysis/ostat2longform.r')
+source('~/qutil.r')
+source('code/bioclimnames.r')
+
+# New null
+load(file.path(fp, "Ostats_bysite2015_harmoniciucn_shufflewt.r"))
+Ostats_bysite2015iucn_newnull <- Ostats_bysite2015iucn
+
+# Original null
+load(file.path(fp, "Ostats_bysite2015_harmoniciucn_orignull.r"))
+
+o2015 <- ostat2longform(Ostats_bysite2015iucn)
+o2015n <- ostat2longform(Ostats_bysite2015iucn_newnull)
+
+iucn <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/IUCN_mammal_ranges.csv')
+load('allorganismal_latest.r')
+load('allsiteplot_latest.r')
+
+mammalTax <- read.csv('C:/Users/Q/Dropbox/neon/protocols/taxonomy/NEON_mam_taxonomy.csv')
+mammalTraits <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/NEON_miscmammaltraits.csv')
+
+# We need new richness and phylogenetic diversity calculations, because the old ones are based on the wrong species list. Do everything from scratch here?
+
+# 12 Jan: calculated new mammal phylogenetic diversity. Updated plot object.
+load('C:/Users/Q/Dropbox/neon/code/mammalPDobject.r')
+
+spatialstat <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/NEON_spatial_stats_highres.csv')
+spstatmeans <- neonplotdata %>% cbind(spatialstat) %>% group_by(siteID) %>% summarize(ruggedness=mean(tri, na.rm=TRUE))
+
+heterodf <- read.csv('C:/Users/Q/Dropbox/neon/data/heterogeneity.csv', stringsAsFactors = FALSE)
+mammalPDsite <- mammalPD %>% rename(mpd_z = mpd.obs.z2015, mntd_z = mntd.obs.z2015) %>% dplyr::select(siteID, mpd_z, mntd_z)
+
+# Recalc richness estimators
+library(iNEXT)
+mam_forrich <- mutate(mam_capture, 
+                      individualandtag = pmin(as.character(individualID), as.character(tagID), na.rm=TRUE),
+                      year = year(date)) %>%
+  filter(order == 'Rodentia', taxonProtocolCategory == 'target', year < 2016)
+
+# Get rid of poorly identified individuals (those marked sp.) because they should not count for our sampling . . . they are spurious singletons.
+
+mammaltables <- mam_forrich %>% filter(!siteID %in% c('DSNY','DELA','HEAL'), !grepl('sp\\.', mam_forrich$scientificName)) %>% group_by(siteID) %>% do(t = table(.$taxonID))
+
+# Make list of abundances into a species X site matrix (species must be rows, sites must be columns)
+mammaltaxalist <- unique(unlist(lapply(mammaltables$t, names)))
+mammalmat <- sapply(mammaltables$t, function(x) x[match(mammaltaxalist, names(x))])
+mammalmat[is.na(mammalmat)] <- 0
+dimnames(mammalmat) <- list(mammaltaxalist, mammaltables$siteID)
+
+# With list
+mamx <- lapply(mammaltables$t, as.numeric)
+names(mamx) <- mammaltables$siteID
+
+set.seed(46545)
+default <- iNEXT(x=mamx, q=0, datatype='abundance', size = c(5,10,50,100,500,1000,2000,3000,4000))
+
+# Asymptotic estimator compared to Chao1
+
+chao <- function(x) {
+  xcomm <- table(x$taxonID)
+  S_obs <- length(xcomm)
+  f1 <- sum(xcomm == 1)
+  f2 <- sum(xcomm == 2)
+  return(data.frame(chao1 = S_obs + (f1 * (f1 - 1)) / (2 * (f2 + 1))))
+}
+
+
+
+asyrich <- default$AsyEst %>% filter(Diversity == 'Species richness') 
+asyrich$Site <- factor(asyrich$Site, levels=asyrich$Site[order(asyrich$Observed)])
+
+chao1site <- mam_forrich %>% filter(!siteID %in% c('DSNY','DELA','HEAL'), !grepl('sp\\.', mam_forrich$scientificName)) %>% group_by(siteID) %>% do(chao(.))
+chao1site$siteID <-factor(asyrich$Site, levels=asyrich$Site[order(asyrich$Observed)])
+
+richnessdat <- full_join(asyrich %>% dplyr::select(Site, Observed, Estimator) %>% rename(siteID=Site), chao1site)
+
+# Create new mam_capture_sitemerge.
+
+mammalGuilds <- mammalTraits %>% 
+  mutate(scientificName = paste(Genus, Species)) %>%
+  dplyr::select(scientificName, Pineda_Main_food)
+
+mammalGuilds <- rbind(mammalGuilds, data.frame(scientificName=c("Dipodomys sp.", "Glaucomys sp.", "Microtus sp.", "Neotoma sp.", 
+                                                                "Perognathus sp.", "Peromyscus sp.", "Reithrodontomys sp."),
+                                               Pineda_Main_food=c('Generalist','Generalist','Herbivore','Herbivore','Generalist','Granivore','Generalist')))
+
+
+mam_forrich <- left_join(mam_forrich, mammalGuilds[-c(89,118,62,63),], by = 'scientificName')
+
+mam_noID <- mam_forrich[mam_forrich$individualandtag=='', c('year', 'siteID','plotID', 'taxonID','family', 'individualandtag','hindfootLength','earLength','tailLength','totalLength','weight','sex','lifeStage','Pineda_Main_food')]
+
+mam_grp <- filter(mam_forrich, individualandtag != '') %>%
+  group_by(year, siteID, plotID, taxonID, family, individualandtag)
+
+mam_byindiv <- summarize_at(mam_grp, vars(hindfootLength, earLength, tailLength, totalLength, weight), median, na.rm=TRUE)
+mam_byindiv_class <- do(mam_grp, data.frame(sex = .$sex[1], lifeStage = names(sort(table(.$lifeStage),decreasing=TRUE))[1], Pineda_Main_food=.$Pineda_Main_food[1]))
+
+mam_byindiv <- cbind(as.data.frame(mam_byindiv), as.data.frame(mam_byindiv_class[,c('sex', 'lifeStage','Pineda_Main_food')]))                  
+mam_byindiv <-rbind(mam_byindiv, mam_noID)
+
+mam_capture_sitemerge <- left_join(mam_byindiv, filter(neonplotdata, subtype == 'mammalGrid'))
+
+
+# Join err'thang togetha
+
+o2015 <- o2015 %>% rename(siteID=site) %>% left_join(neonsitedata) %>% left_join(spstatmeans) %>% left_join(mammalPDsite) %>% left_join(richnessdat) %>% left_join(heterodf) 
+o2015n <- o2015n %>% rename(siteID=site) %>% left_join(neonsitedata) %>% left_join(spstatmeans) %>% left_join(mammalPDsite) %>% left_join(richnessdat) %>% left_join(heterodf)
+
+# Set plot parameters
+theme_john <- theme_bw() + theme(panel.grid = element_blank(), 
+                                 axis.text = element_text(size = 12), 
+                                 axis.title = element_text(size = 18),
+                                 text = element_text(family = 'Helvetica'))
+
+# Add some additional parameters to get rid of the axis ticks and numbers if you want.
+theme_noaxisnumbers <- theme(axis.text.x = element_blank(), axis.text.y = element_blank(), axis.ticks.x = element_blank(), axis.ticks.y = element_blank())
+
+
+sites2use <- c('STEI','BART','KONZ','JORN')
+l1 <- labeller(siteID = c(STEI='Steigerwaldt', BART='Bartlett', KONZ='Konza', JORN='Jornada'))
+sites_temporder <- neonsitedata %>% arrange(bio1) %>% dplyr::select(siteID, bio1)
+
+colorlist <- c('darkorange2', 'gold2', 'black', 'royalblue3','purple3', 'forestgreen', 'red3')
+set.seed(27701)
+colorvalues <- sample(colorRampPalette(colorlist)(26))
+
+dat <- filter(mam_capture_sitemerge, year == 2015, siteID %in% sites2use) %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID))
+abunds <- dat %>% group_by(siteID, taxonID) %>% summarize(n = sum(!is.na(weight)))
+total_abunds <- with(abunds, tapply(n,siteID,sum))
+abunds <- left_join(abunds, data.frame(siteID=names(total_abunds), total_n=total_abunds))
+
+# current fig
+pdensshade4clean <- ggplot(filter(mam_capture_sitemerge, year == 2015, siteID %in% sites2use) %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID))) +
+  stat_density(adjust = 2, size = 1, aes(x = log10(weight), group = taxonID, fill=taxonID), alpha = 0.67, geom='polygon', position = 'identity') + facet_wrap(~ siteID, ncol = 1, labeller = l1) +
+  scale_fill_manual(values = colorvalues) +
+  scale_x_continuous(name = 'body mass (g)', breaks = c(1, 2, 3), labels = c(10, 100, 1000), limits = c(0.5,3)) +
+  scale_y_continuous(name = 'probability density', expand = c(0,0), limits=c(0,9)) +
+  geom_text(aes(label = paste('Overlap =', round(ostat_norm,3)), x = 2.5, y = 8.5), color = 'black', data = o2015 %>% filter(siteID %in% sites2use, trait %in% 'logweight') %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica') +
+  geom_text(aes(label = paste0('MAT = ', round(bio1, 1), '°C'), x = 0.5, y = 8.5), color = 'black', data = neonsitedata %>% filter(siteID %in% sites2use) %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica', hjust = 0) +
+  theme_john + theme(axis.text.y=element_blank(), axis.ticks.y=element_blank(), legend.position = 'none', strip.text = element_text(family='Helvetica'), strip.background = element_blank())
+
+# Use alpha scale to shade.
+pdensshade4alpha <- ggplot(left_join(dat, abunds %>% ungroup %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)))) +
+  stat_density(adjust = 2, size = 1, aes(x = log10(weight), group = taxonID, alpha=n/total_n), fill = 'blue', geom='polygon', position = 'identity') + 
+  facet_wrap(~ siteID, ncol = 1, labeller = l1) +
+  scale_fill_manual(values = colorvalues) +
+  scale_alpha_continuous(range = c(0.1, 0.75), name = 'relative\nabundance') +
+  scale_x_continuous(name = 'body mass (g)', breaks = c(1, 2, 3), labels = c(10, 100, 1000), limits = c(0.5,3.1)) +
+  scale_y_continuous(name = 'probability density', expand = c(0,0), limits=c(0,9)) +
+  geom_text(aes(label = paste('Overlap =', round(ostat_norm,3)), x = 2.5, y = 8.5), color = 'black', data = o2015 %>% filter(siteID %in% sites2use, trait %in% 'logweight') %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica') +
+  geom_text(aes(label = paste0('MAT = ', round(bio1, 1), '°C'), x = 0.5, y = 8.5), color = 'black', data = neonsitedata %>% filter(siteID %in% sites2use) %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica', hjust = 0) +
+  theme_john + theme(axis.text.y=element_blank(), axis.ticks.y=element_blank(), legend.position = 'none', strip.text = element_text(family='Helvetica'), strip.background = element_blank())
+
+# Same shading, but size of curves depends on abundance
+
+# Must get raw kernel density fns out of the data.
+
+dodens <- function(x) {
+  if (sum(!is.na(x$weight)) < 2) return(NA)
+  else density(log10(x$weight[!is.na(x$weight)]), adjust=2)
+}
+
+library(plyr)
+
+densout <- ddply(dat, .(siteID, taxonID), function(z) {
+  dz <- dodens(z)
+  if (!inherits(dz,'density')) return(data.frame(x=NA,y=NA))
+  else return(data.frame(x=dz$x, y=dz$y))
+})
+
+total_abunds <- with(abunds, tapply(n,siteID,sum))
+abunds <- left_join(abunds, data.frame(siteID=names(total_abunds), total_n=total_abunds))
+
+pdensshade4height <- ggplot(left_join(densout, abunds %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)))) +
+  geom_polygon(aes(x=x, y=y*n/total_n, group=taxonID, fill=taxonID), alpha = 0.67) +
+  facet_wrap(~ siteID, ncol = 1, labeller = l1) +
+  scale_fill_manual(values = colorvalues) +
+  scale_x_continuous(name = expression(paste('log'[10],' body mass')), breaks = c(1, 2), labels = c(10, 100), limits = c(0.5,2.7)) +
+  scale_y_continuous(name = 'probability density * relative abundance', expand = c(0,0)) +
+  geom_text(aes(label = paste('Overlap =', round(ostat_norm,3)), x = 2.35, y = 2.5), color = 'black', data = o2015 %>% filter(siteID %in% sites2use, trait %in% 'logweight') %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica') +
+  geom_text(aes(label = paste0('MAT = ', round(bio1, 1), '°C'), x = 0.5, y = 2.5), color = 'black', data = neonsitedata %>% filter(siteID %in% sites2use) %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica', hjust = 0) +
+  theme_john + theme(axis.text.y=element_blank(), axis.ticks.y=element_blank(), legend.position = 'none', strip.text = element_text(family='Helvetica'), strip.background = element_blank())
+
+# Maintain pretty colors, keeping the saturation and value the same but changing hue. That way alpha can reveal abundance.
+
+hue_colors <- hsv(h = seq(0, 1, length.out = 26), s = 0.8, v = 1)
+
+pdensshade4hue <- ggplot(left_join(dat, abunds %>% ungroup %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)))) +
+  stat_density(adjust = 2, size = 1, aes(x = log10(weight), group = taxonID, alpha=n/total_n, fill=taxonID), geom='polygon', position = 'identity') + 
+  facet_wrap(~ siteID, ncol = 1, labeller = l1) +
+  scale_fill_manual(values = hue_colors) +
+  scale_alpha_continuous(range = c(0.1, 0.75), name = 'relative\nabundance') +
+  scale_x_continuous(name = 'body mass (g)', breaks = c(1, 2, 3), labels = c(10, 100, 1000), limits = c(0.5,3.1)) +
+  scale_y_continuous(name = 'probability density', expand = c(0,0), limits=c(0,9)) +
+  geom_text(aes(label = paste('Overlap =', round(ostat_norm,3)), x = 2.5, y = 8.5), color = 'black', data = o2015 %>% filter(siteID %in% sites2use, trait %in% 'logweight') %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica') +
+  geom_text(aes(label = paste0('MAT = ', round(bio1, 1), '°C'), x = 0.5, y = 8.5), color = 'black', data = neonsitedata %>% filter(siteID %in% sites2use) %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica', hjust = 0) +
+  theme_john + theme(axis.text.y=element_blank(), axis.ticks.y=element_blank(), legend.position = 'none', strip.text = element_text(family='Helvetica'), strip.background = element_blank()) +
+  theme(legend.position = 'bottom') + guides(fill = FALSE)
+
+# Make the color correspond to abundance, using the same color scheme as in Fig.2.
+
+abund_colors <- colorRampPalette(rev(RColorBrewer::brewer.pal(9, 'RdYlBu')))(26)
+fsc1 <- scale_fill_gradientn(name = 'relative\nabundance', colors = rev(RColorBrewer::brewer.pal(9, 'RdYlBu')))
+fsc2 <- scale_fill_gradientn(name = 'relative\nabundance', colors = rev(RColorBrewer::brewer.pal(11, 'RdYlGn')))
+fsc3 <- scale_fill_gradientn(name = 'relative\nabundance', colors = rev(RColorBrewer::brewer.pal(11, 'Spectral')))
+
+
+pdensshade4abundcolor <- ggplot(left_join(dat, abunds %>% ungroup %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)))) +
+  stat_density(adjust = 2, size = 1, aes(x = log10(weight), group = taxonID, fill=n/total_n), alpha=0.67, geom='polygon', position = 'identity') + 
+  facet_wrap(~ siteID, ncol = 1, labeller = l1) +
+  fsc1 +
+  scale_alpha_continuous(range = c(0.1, 0.75), name = 'relative\nabundance') +
+  scale_x_continuous(name = 'body mass (g)', breaks = c(1, 2, 3), labels = c(10, 100, 1000), limits = c(0.5,3.1)) +
+  scale_y_continuous(name = 'probability density', expand = c(0,0), limits=c(0,9)) +
+  geom_text(aes(label = paste('Overlap =', round(ostat_norm,3)), x = 2.5, y = 8.5), color = 'black', data = o2015 %>% filter(siteID %in% sites2use, trait %in% 'logweight') %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica') +
+  geom_text(aes(label = paste0('MAT = ', round(bio1, 1), '°C'), x = 0.5, y = 8.5), color = 'black', data = neonsitedata %>% filter(siteID %in% sites2use) %>% mutate(siteID = factor(siteID, levels=sites_temporder$siteID)), family = 'Helvetica', hjust = 0) +
+  theme_john + theme(axis.text.y=element_blank(), axis.ticks.y=element_blank(), legend.position = 'none', strip.text = element_text(family='Helvetica'), strip.background = element_blank()) +
+  theme(legend.position = 'bottom')
+
+```
+
+\newpage
+
+## Current figure in MS
+
+Pretty colors, no indication of abundance.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=8, fig.width=4*8/9}
+pdensshade4clean
+```
+
+\newpage
+
+## Alternative 1
+
+Keeps pretty colors, heights correspond to abundance. This makes the overlaps look different and makes some rarer species almost impossible to see, but this may be OK because you could argue they are relatively unimportant.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=8, fig.width=4*8/9}
+pdensshade4height
+```
+
+\newpage
+
+## Alternative 2
+
+All in one color, transparency corresponds to abundance. The overlays will be darkest where the most individuals are overlapping. No longer has pretty colors.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=8, fig.width=4*8/9}
+pdensshade4alpha + theme(legend.position = 'bottom')
+```
+
+\newpage
+
+## Alternative 3
+
+Different colors with the same brightness value, transparency corresponds to abundance. Looks pretty but might be too confusing.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=8, fig.width=4*8/9}
+pdensshade4hue
+```
+
+\newpage
+
+## Alternative 4
+
+Same transparency value, color corresponds to abundance. I've shown it with multiple different color palettes.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=8, fig.width=4*8/9}
+pdensshade4abundcolor
+```
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=8, fig.width=4*8/9}
+pdensshade4abundcolor + fsc2
+```
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=8, fig.width=4*8/9}
+pdensshade4abundcolor + fsc3
+```

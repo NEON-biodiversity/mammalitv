@@ -1,0 +1,631 @@
+---
+title: "Hypothesis Testing with Mammal and Beetle Data"
+author: "Quentin D. Read"
+date: "August 17, 2016"
+output: 
+  pdf_document:
+    toc: TRUE
+---
+
+
+
+# Modification history
+
+- 17 Aug 2016: Incorporated new mammal data, splitting analyses into 2014 and 2015. Also got rid of everything except the most correct mixed models, to try to clean up some of the extraneous output.
+- 03 Aug 2016: Changed some plot formatting (didn't bother updating pdf)
+- 01 Aug 2016: Added correct nesting of (1|family/taxonID)
+- 27 July 2016: Added different beta-diversity metric and calculations based on 2014 temperatures in addition to climate normals.
+- 22 July 2016: Added family-level analysis to Bergmann's rule.
+- 21 July 2016: Added all the new, expanded data, and added a lot of figures and analysis on species turnover.
+
+\newpage
+# Introduction
+
+This is to illustrate how the NEON mammal and beetle dataset can be used to test various biological hypotheses. This document was modified on July 21 because new data were added. It doesn't qualitatively change the results, though. In addition, a little extra analysis was added on July 22 to split the mammals by (taxonomic) family instead of by species. On August 17, it was modified to add the mammal data from 2015 and to split the mammal analysis into two years, because it would be incorrect to pool all the 2014 and 2015 records from a single site into a single analysis, I think.
+
+# Bergmann's Rule
+
+Bergmann's Rule leads to the hypothesis that mammals in warmer environments should have smaller body sizes. I tested this by regressing mammal body weight on mean annual temperature (Bioclim). Weight was more widely available than body length. I subset the mammal data to exclude all recaptured individuals and to only include adults. In addition, as part of the data processing, I added a "family" column to the data frame.
+
+```{r, message=FALSE}
+library(ggplot2)
+setwd('~/GitHub/NEON')
+load('allorganismal_latest.r') # New org. data
+load('allsiteplot2016Jun21.r') # Site covariates
+
+library(dplyr)
+library(lubridate)
+mam_capture <- mutate(mam_capture, 
+                      individualandtag = pmin(as.character(individualID), as.character(tagID), na.rm=TRUE),
+                      year = year(date))
+
+mam_noID <- mam_capture[mam_capture$individualandtag=='', c('year', 'siteID','taxonID','family', 'individualandtag','hindfootLength','earLength','tailLength','totalLength','weight','sex','lifeStage')]
+
+mam_grp <- filter(mam_capture, individualandtag != '') %>%
+  group_by(year, siteID, taxonID, family, individualandtag)
+
+mam_byindiv <- summarize_at(mam_grp, vars(hindfootLength, earLength, tailLength, totalLength, weight), median, na.rm=TRUE)
+mam_byindiv_class <- do(mam_grp, data.frame(sex = .$sex[1], lifeStage = names(sort(table(.$lifeStage),decreasing=TRUE))[1]))
+
+mam_byindiv <- cbind(as.data.frame(mam_byindiv), as.data.frame(mam_byindiv_class[,c('sex', 'lifeStage')]))                  
+mam_byindiv <-rbind(mam_byindiv, mam_noID)
+
+
+# Merge covariates with mammal data for plotting
+#mam_capture_merge <- merge(mam_byindiv, neonplotdata[,-c(1:6,9:10)], sort=FALSE, all.x=TRUE) # Does not work.
+mam_capture_sitemerge <- merge(mam_byindiv, neonsitedata[,-c(3:5)], sort=FALSE, all.x=TRUE)
+mam_adults <- subset(mam_capture_sitemerge, lifeStage=='adult')
+
+```
+
+First, I fit a "naive" linear regression. About 13% of the variation in body size is explained by mean annual temperature.
+
+```{r, tidy=TRUE}
+adult_naive <- lm(weight ~ bio1, data = mam_adults)
+summary(adult_naive)
+
+# Split by years.
+adult_naive2014 <- lm(weight ~ bio1, data = mam_adults, subset = year==2014)
+summary(adult_naive2014)
+
+adult_naive2015 <- lm(weight ~ bio1, data = mam_adults, subset = year==2015)
+summary(adult_naive2015)
+
+```
+
+Next, I fit a linear mixed model fitting a random intercept to each species, nested within family, as well as a random intercept for sites. I output the confidence interval for the temperature parameter. Bergmann's Rule would predict negative but it is significantly positive. I used the *r.squaredGLMM()* function to calculate the marginal and conditional R-squared values for this model. It is clear that almost all the variation is explained by species. It's not clear why such a small amount of variation explained by temperature is "significant." Grouping by family might just be better for visualization purposes---it's hard to see the difference between 30 or 40 species but most of the individuals are in 5 families (6 total). There are really no differences in the outcome of the pattern, but you can see how the taxonomic variation is broken down. The "opposite of Bergmann's" pattern seems to be driven by individuals in the Cricetidae family (see the figure lower down). Note that this model is with 2014 and 2015 data pooled together.
+
+```{r, tidy=TRUE, message=FALSE, warning=FALSE}
+# How many adult individuals in each family?
+table(mam_adults$family)
+
+library(lme4)
+library(MuMIn)
+
+adult_taxa <- lmer(weight ~ bio1 + (1|family/taxonID) + (1|siteID), data = subset(mam_adults, !is.na(weight) & siteID!='HEAL'))
+confint(adult_taxa, parm='bio1', method='boot')
+r.squaredGLMM(adult_taxa)
+```
+
+Third, I fit a linear mixed model with a fixed effect slope for each species and site as the random effect (random intercept). I believe this is correct but it might be more correct to have them both as random effects. Again, the temperature parameter is significantly greater than zero. 90% of the weight variation is explained by a combination of temperature and species ID.
+
+```{r, tidy=TRUE, message=FALSE}
+adult_sitespecies <- lmer(weight ~ bio1 + taxonID + (1|siteID), data=subset(mam_adults, !is.na(weight) & siteID!='HEAL'))
+confint(adult_sitespecies, parm='bio1', method='boot', nsim=999)
+
+r.squaredGLMM(adult_sitespecies)
+
+```
+
+\newpage
+Here are plots of the data with the same slopes and with the different slopes for each species.
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+source('C:/Users/Q/Documents/qutil.r')
+source('C:/Users/Q/Documents/GitHub/NEON/code/bioclimnames.r')
+
+# Generate prediction data so that lines can be plotted on the figure.
+library(dplyr)
+newdat <- mam_adults %>% filter(!is.na(weight) & siteID!='HEAL' & !is.na(family)) %>%
+  group_by(family, taxonID) %>%
+  do(data.frame(bio1 = c(min(.$bio1), max(.$bio1)),
+                siteID = c(.$siteID[which.min(.$bio1)], .$siteID[which.max(.$bio1)])
+                ))
+
+newdat2 <- mam_adults %>% filter(!is.na(weight) & siteID!='HEAL' & !is.na(family)) %>%
+  group_by(family) %>%
+  do(data.frame(bio1 = c(min(.$bio1), max(.$bio1)),
+                siteID = c(.$siteID[which.min(.$bio1)], .$siteID[which.max(.$bio1)])
+  ))
+
+
+ggplot(subset(mam_adults, !is.na(weight))) +
+  geom_point(aes(color=family, y=weight, x=bio1), alpha=0.6) +
+  geom_line(aes(y= predict(adult_taxa, newdata=newdat, type='response'), size='Species', x=bio1, group=taxonID, color=family), data=newdat, alpha=0.4) +
+  geom_line(aes(y= predict(adult_taxa, newdata=mutate(newdat2, taxonID=NA), re.form=~(1|family)), size='Family', x=bio1, group=family, color=family), data=newdat2) +
+  scale_size_manual(name='Predictions', values=c('Species'=0.5,'Family'=2)) +
+  theme_minimal() +
+  qSubtitle('Opposite of Bergmann\'s Rule', 'Random intercepts for sites and families') +
+  labs(x = parse(text=bioclimnames[1]), y = 'Body weight (g)')
+```
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+ggplot(subset(mam_adults, !is.na(weight) & siteID!='HEAL'), aes(x=bio1, y=weight)) +
+  geom_point(aes(color=taxonID)) +
+  geom_line(aes(y= predict(adult_sitespecies), group=taxonID)) +
+  theme_minimal() + theme(legend.text=element_text(size=6)) +
+  qSubtitle('Opposite of Bergmann\'s Rule', 'Species fixed effect, site random effect') +
+  labs(x = 'Mean annual temperature (C)', y = 'Body weight (g)')
+```
+
+[Back to top](#top)
+
+\newpage
+# Allen's Rule
+
+*Note: this was not updated with the most correct mixed models, though it was run with 2014 and 2015 data pooled.*
+
+There is also a rule called Allen's rule predicting that the appendages of animals should be longer, the warmer the environment. This prediction can be tested with our data. I divided the hind foot length by the animal's weight to scale it by body size. Interestingly enough, we see the opposite. The longest hind foot length relative to the body is found in cold environments. I didn't show the family differences here but it should be relatively similar to the Bergmann's pattern.
+
+```{r, tidy=TRUE}
+allen_naive <- lm(I(hindfootLength/weight) ~ bio1, data = mam_adults)
+summary(allen_naive)
+
+allen_byspecies <- lmer(I(hindfootLength/weight) ~ bio1 + (1|taxonID), data = mam_adults)
+confint(allen_byspecies, parm='bio1', method='boot', nsim=999)
+r.squaredGLMM(allen_byspecies)
+
+allen_sitespecies <- lmer(I(hindfootLength/weight) ~ bio1 + taxonID + (1|siteID), data=mam_adults)
+confint(allen_sitespecies, parm='bio1', method='boot', nsim=999)
+r.squaredGLMM(allen_sitespecies)
+
+```
+
+\newpage
+Here are the same types of plots for Allen's Rule.
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+
+ggplot(subset(mam_adults, !is.na(weight) & !is.na(hindfootLength) & siteID!='HEAL'), aes(x = bio1, y = hindfootLength/weight)) +
+  geom_point(aes(color = taxonID)) +
+  geom_line(aes(y = predict(allen_byspecies), group = taxonID)) +
+  theme_minimal() + theme(legend.text = element_text(size=6)) +
+  qSubtitle('Opposite of Allen\'s Rule', 'Linear mixed model fit with random intercepts') +
+  labs(x = 'Mean annual temperature (C)', y = 'Ratio foot length to weight')
+```
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+ggplot(subset(mam_adults, !is.na(weight) & !is.na(hindfootLength) & siteID!='HEAL'), aes(x = bio1, y = hindfootLength/weight)) +
+  geom_point(aes(color=taxonID)) +
+  geom_line(aes(y= predict(allen_sitespecies), group=taxonID)) +
+  theme_minimal() + theme(legend.text = element_text(size=6)) +
+  qSubtitle('Opposite of Allen\'s Rule', 'Species fixed effect, site random effect') +
+  labs(x = 'Mean annual temperature (C)', y = 'Ratio foot length to weight')
+```
+
+[Back to top](#top)
+
+\newpage
+# Residual Body Condition of Mammals
+
+*Note: this was not updated with the 2015 data.*
+
+It was discussed that we should also examine the residual condition of the mammals. The residual of the regression of log-transformed weight on log-transformed length will tell us if a given individual is fatter or less fat than expected for its length. We have about 600 individuals for which we know both length and weight. It looks like a significant amount of the variation is explained by taxon and temperature.
+
+```{r, tidy=TRUE}
+residcond <- lm(log(weight) ~ log(totalLength), data=mam_adults)$residuals
+# Only 1589 have both measured.
+mam_adults$residualCondition <- residcond[row.names(mam_adults)]
+```
+
+Here are the same models as previous, fit for the residual condition.
+
+```{r, tidy=TRUE}
+rc_naive <- lm(residualCondition ~ bio1, data = mam_adults)
+summary(rc_naive)
+
+rc_byspecies <- lmer(residualCondition ~ bio1 + (1|taxonID), data = mam_adults)
+confint(rc_byspecies, parm='bio1', method='boot', nsim=999)
+r.squaredGLMM(rc_byspecies)
+
+rc_sitespecies <- lmer(residualCondition ~ bio1 + taxonID + (1|siteID), data=mam_adults)
+confint(rc_sitespecies, parm='bio1', method='boot', nsim=999)
+r.squaredGLMM(rc_sitespecies)
+```
+
+\newpage
+Here are the plots for both types of random-effects model.
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+ggplot(subset(mam_adults, !is.na(residualCondition) & siteID!='HEAL'), aes(x = bio1, y = residualCondition)) +
+  geom_point(aes(color = taxonID)) +
+  geom_line(aes(y = predict(rc_byspecies), group = taxonID)) +
+  theme_minimal() +
+  qSubtitle('Residual condition', 'Linear mixed model fit with random intercepts') +
+  labs(x = 'Mean annual temperature (C)', y = 'Foot length-height regression residuals')
+```
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+ggplot(subset(mam_adults, !is.na(residualCondition) & siteID!='HEAL'), aes(x = bio1, y = residualCondition)) +
+  geom_point(aes(color=taxonID)) +
+  geom_line(aes(y= predict(rc_sitespecies), group=taxonID)) +
+  theme_minimal() + theme(legend.text = element_text(size=6)) +
+  qSubtitle('Residual condition', 'Species fixed effect, site random effect') +
+  labs(x = 'Mean annual temperature (C)', y = 'Foot length-height regression residuals')
+```
+
+[Back to top](#top)
+
+\newpage
+# Temporal Turnover Versus Climate Variability
+
+It has been hypothesized that the temporal turnover in communities should be greater in areas with greater temporal climate variability. For example, the tropics tend to have lower temperature seasonality, so there should be less turnover of communities within a given year in the tropics compared to temperate regions. We can test this hypothesis with the mammal data, which span a pretty wide range of temperature and precipitation variability. As can be seen from the maps below, temperature seasonality is highest in the northern and most continental sites, and precipitation seasonality is high in the continental sites as well as Florida.
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=7}
+
+ggplot(subset(neonsitedata, decimalLatitude>20 & decimalLatitude<50 & siteID %in% unique(mam_capture$siteID)), aes(x=decimalLongitude, y=decimalLatitude)) + 
+  borders('state', fill = 'beige') +
+  geom_point(aes(fill = bio4), size=3, shape=21) +
+  geom_text(aes(label = siteID), vjust = -0.5) +
+  scale_fill_gradient(name='Temperature\nseasonality', low='forestgreen', high='lightgoldenrod1') +
+  coord_map()
+
+ggplot(subset(neonsitedata, decimalLatitude>20 & decimalLatitude<50 & siteID %in% unique(mam_capture$siteID)), aes(x=decimalLongitude, y=decimalLatitude)) + 
+  borders('state', fill = 'beige') +
+  geom_point(aes(fill = bio15), size=3, shape=21) +
+  geom_text(aes(label = siteID), vjust = -0.5) +
+  scale_fill_gradient(name='Precipitation\nseasonality', low='forestgreen', high='lightgoldenrod1') +
+  coord_map()
+
+```
+
+\newpage
+My initial idea was to calculate beta-diversity across the sites. I combined all the trapping nights from a single bout and took the relative abundance of each mammal species. I calculated temporal beta-diversity (Shannon's) using the *vegetarian* package in R. I regressed this against the within-year temperature variability at each site, as well as the precipitation variability. **Note:** Some of the sites have multiple years of data, but I just combined them all for now. I had to do a lot of data cleaning (not shown here) to classify the mammal abundances by sampling bout, then take the relative abundance of the bouts. I also tried another method where I calculated the Euclidean distance between successive communities and divided that by the number of days between sampling bouts, but it doesn't seem to be very different, so I don't show the method here.
+
+```{r, message=FALSE, echo=FALSE}
+# Fix some of the poorly formatted dates in the table.
+
+library(plyr)
+
+# Sum up the individual nights into bouts (assign with function, where anything separated by at least a week is in a different bout)
+
+getbout <- function(x) {
+  daydiffs <- diff(as.Date(dimnames(x)[[1]]))
+  daygrp <- rep(1, length(daydiffs) + 1)
+  for (i in 1:length(daydiffs)) if (daydiffs[i] >= 7) daygrp[(i+1):length(daygrp)] <- daygrp[(i+1):length(daygrp)] + 1
+  daygrp
+}
+
+comm_list <- dlply(mam_capture, .(siteID), function(x) table(x$date, x$taxonID) )
+
+bouts <- lapply(comm_list, getbout)
+
+# Calculate normalized relative abundance by bout for each site.
+
+comm_bybout <- list()
+
+for (i in 1:length(comm_list)) {
+  x <- as.data.frame.matrix(comm_list[[i]])
+  x$bout <- bouts[[i]]
+  x$date <- as.Date(row.names(x))
+  comm_bybout[[i]] <- ddply(x, .(bout), function(z) {
+    zcomm <- z[, -c(ncol(z)-1, ncol(z))]
+    abunds <- apply(zcomm, 2, sum)
+    abunds <- abunds/sum(abunds)
+    return(data.frame(date = z$date[1], t(abunds)))
+  })
+}
+
+```
+
+A site, classified by sampling bout, looks like this.
+
+```{r, tidy=TRUE}
+comm_bybout[[1]]
+```
+
+Next, I calculated the beta-diversity across the sampling bouts for each site. In the *vegetarian* package, $q = 1$ represents Shannon's diversity.
+
+```{r, tidy=TRUE}
+# Calculate the beta diversity at the different sites.
+
+library(vegetarian)
+
+betadiv_all <- lapply(comm_bybout, function(x) {
+  ddply(x, .(year(date)), function(z) {
+    if (nrow(z) > 1) res <- as.numeric(d(z[,-(1:2)], lev='beta', q=1, boot=TRUE)) else res <- c(NA,NA)
+    return(data.frame(D.Value = res[1], StdErr=res[2]))
+  })         
+})
+for (i in 1:length(betadiv_all)) betadiv_all[[i]]$siteID <- names(comm_list)[i]
+betadiv_all <- do.call('rbind', betadiv_all)
+names(betadiv_all)[1] <- 'year'
+
+betadiv_all <- merge(betadiv_all, neonsitedata, sort=FALSE, all.x=TRUE, all.y=FALSE)
+```
+
+\newpage
+This does not appear to have a significant relationship with temperature or with climate variability within years, as shown here:
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+library(ggplot2)
+source('~/GitHub/NEON/code/bioclimnames.r')
+ggplot(subset(betadiv_all,year==2014), aes(x=bio1, y=D.Value, ymin=D.Value-StdErr, ymax=D.Value+StdErr)) +
+  geom_pointrange() +
+  theme_minimal() +
+  ggtitle('2014 mammal turnover vs site temperature') +
+  labs(x = parse(text=bioclimnames[1]), y = 'Temporal beta-diversity')
+
+ggplot(subset(betadiv_all,year==2015), aes(x=bio1, y=D.Value, ymin=D.Value-StdErr, ymax=D.Value+StdErr)) +
+  geom_pointrange() +
+  theme_minimal() +
+  ggtitle('2015 mammal turnover vs site temperature') +
+  labs(x = parse(text=bioclimnames[1]), y = 'Temporal beta-diversity')
+
+
+ggplot(subset(betadiv_all,year==2014), aes(x=bio4, y=D.Value, ymin=D.Value-StdErr, ymax=D.Value+StdErr)) +
+  geom_pointrange() +
+  theme_minimal() +
+  ggtitle('2014 mammal turnover vs within-year temp variability') +
+  labs(x = 'Temperature Seasonality (CV)', y = 'Temporal beta-diversity')
+
+ggplot(subset(betadiv_all,year==2015), aes(x=bio4, y=D.Value, ymin=D.Value-StdErr, ymax=D.Value+StdErr)) +
+  geom_pointrange() +
+  theme_minimal() +
+  ggtitle('2015 mammal turnover vs within-year temp variability') +
+  labs(x = 'Temperature Seasonality (CV)', y = 'Temporal beta-diversity')
+
+
+ggplot(subset(betadiv_all,year==2014), aes(x=bio15, y=D.Value)) +
+  geom_pointrange(aes(ymin=D.Value-StdErr, ymax=D.Value+StdErr)) +
+  theme_minimal() +
+  ggtitle('2014 mammal turnover vs within-year precip variability') +
+  labs(x = 'Precipitation Seasonality (CV)', y = 'Temporal beta-diversity')
+
+ggplot(subset(betadiv_all,year==2015), aes(x=bio15, y=D.Value)) +
+  geom_pointrange(aes(ymin=D.Value-StdErr, ymax=D.Value+StdErr)) +
+  theme_minimal() +
+  ggtitle('2015 mammal turnover vs within-year precip variability') +
+  labs(x = 'Precipitation Seasonality (CV)', y = 'Temporal beta-diversity')
+
+```
+
+\newpage
+## Beta diversity calculated with Baselga's method
+
+Here is the beta-diversity calculation using Baselga's method. This is supposed to be independent of species richness and can distinguish between species losses and species turnover. However it is based on presence-absence, not relative abundance. Note: this is a similarity index, so I took the inverse of it to get the beta-diversity index. I also plot it against the beta-diversity index that is based on Shannon's diversity, calculated above. The R script to calculate the diversity index was included as supplemental information in Baselga et al. 2007, Biology Letters.
+
+```{r, tidy=TRUE, warning=FALSE}
+source('~/GitHub/NEON/code/baselga.r')
+
+betadiv_baselga <- lapply(comm_bybout, function(x) {
+  ddply(x, .(year(date)), function(z) {
+    1/as.numeric(Simpson.multi(z[,-(1:2)] > 0)[2])
+  })         
+})
+for (i in 1:length(betadiv_baselga)) betadiv_baselga[[i]]$siteID <- names(comm_list)[i]
+betadiv_baselga <- do.call('rbind', betadiv_baselga)
+names(betadiv_baselga)[1:2] <- c('year','baselga')
+
+betadiv_all <- merge(betadiv_all, transform(betadiv_baselga, siteID=as.character(siteID)))
+
+qplot(betadiv_baselga$baselga, betadiv_all$D.Value) + 
+  coord_equal() + theme_minimal() + geom_abline(slope=1,intercept=0, linetype='dotted', color='red')
+
+```
+
+Here it looks like this also does not have much relationship with climate.
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+ggplot(subset(betadiv_all,year==2014), aes(x=bio1, y=baselga)) +
+  geom_point() +
+  theme_minimal() +
+  ggtitle('2014 mammal turnover (Baselga) vs site temperature') +
+  labs(x = parse(text=bioclimnames[1]), y = 'Temporal beta-diversity')
+
+ggplot(subset(betadiv_all,year==2015), aes(x=bio1, y=baselga)) +
+  geom_point() +
+  theme_minimal() +
+  ggtitle('2015 mammal turnover (Baselga) vs site temperature') +
+  labs(x = parse(text=bioclimnames[1]), y = 'Temporal beta-diversity')
+
+ggplot(subset(betadiv_all,year==2014), aes(x=bio4, y=baselga)) +
+  geom_point() +
+  theme_minimal() +
+  ggtitle('2014 mammal turnover (Baselga) vs within-year temp variability') +
+  labs(x = 'Temperature Seasonality (CV)', y = 'Temporal beta-diversity')
+
+ggplot(subset(betadiv_all,year==2015), aes(x=bio4, y=baselga)) +
+  geom_point() +
+  theme_minimal() +
+  ggtitle('2015 mammal turnover (Baselga) vs within-year temp variability') +
+  labs(x = 'Temperature Seasonality (CV)', y = 'Temporal beta-diversity')
+
+
+ggplot(subset(betadiv_all,year==2014), aes(x=bio15, y=baselga)) +
+  geom_point() +
+  theme_minimal() +
+  ggtitle('2014 mammal turnover (Baselga) vs within-year precip variability') +
+  labs(x = 'Precipitation Seasonality (CV)', y = 'Temporal beta-diversity')
+
+ggplot(subset(betadiv_all,year==2015), aes(x=bio15, y=baselga)) +
+  geom_point() +
+  theme_minimal() +
+  ggtitle('2015 mammal turnover (Baselga) vs within-year precip variability') +
+  labs(x = 'Precipitation Seasonality (CV)', y = 'Temporal beta-diversity')
+
+```
+
+
+[Back to top](#top)
+
+\newpage
+# Beetle Temporal Turnover
+
+Not having any beetle traits to test, we can still work with the community turnover. I ran the same analyses for the beetles. The sampling bouts were basically one day long so I just had to consolidate a few things. I also calculated the Baselga metric for the beetles. Unfortunately, there aren't any data records from 2015 for the beetles yet, but hopefully there will be soon.
+
+```{r, tidy=TRUE}
+# Tabulate species by site and date
+
+bet_pinning <- subset(bet_pinning, !is.na(siteID) & siteID!='')
+
+# Correct dates that are not on the same bout in the bet_pinning data frame.
+
+bet_pinning$collectDate[bet_pinning$siteID=='OSBS' & bet_pinning$collectDate=='2014-06-07'] <- '2014-06-09'
+bet_pinning$collectDate[bet_pinning$siteID=='DSNY' & bet_pinning$collectDate=='2014-06-06'] <- '2014-06-11'
+bet_pinning$collectDate[bet_pinning$siteID=='JERC' & bet_pinning$collectDate=='2014-09-10'] <- '2014-09-11'
+bet_pinning$collectDate[bet_pinning$siteID=='ORNL' & bet_pinning$collectDate=='2014-06-17'] <- '2014-06-16'
+bet_pinning$collectDate[bet_pinning$siteID=='SCBI' & bet_pinning$collectDate=='2014-06-11'] <- '2014-06-10'
+bet_pinning$collectDate[bet_pinning$siteID=='SCBI' & bet_pinning$collectDate=='2014-08-21'] <- '2014-08-19'
+bet_pinning$collectDate[bet_pinning$siteID=='UNDE' & bet_pinning$collectDate=='2014-08-12'] <- '2014-08-19'
+bet_pinning$collectDate[bet_pinning$siteID=='WOOD' & bet_pinning$collectDate=='2014-08-17'] <- '2014-08-13'
+bet_pinning$collectDate[bet_pinning$siteID=='WOOD' & bet_pinning$collectDate=='2014-08-23'] <- '2014-08-27'
+
+library(plyr)
+
+beetlecomm_list <- dlply(bet_pinning, .(siteID), function(x) table(x$collectDate, x$taxonID) )
+
+# Remove the ones with no entries
+beetlecomm_list <- beetlecomm_list[!names(beetlecomm_list) %in% c('ONAQ','TALL')]
+
+# Calculate the beta diversity at the different sites.
+
+library(vegetarian)
+
+beetlebetadiv_all <- sapply(beetlecomm_list, function(x) as.numeric(d(x, lev='beta', q=1, boot=TRUE)))
+
+beetlebetadiv_all <- as.data.frame(t(beetlebetadiv_all))
+names(beetlebetadiv_all) <- c('D.Value','StdErr')
+beetlebetadiv_all$siteID <- names(beetlecomm_list)
+beetlebetadiv_all <- merge(beetlebetadiv_all, neonsitedata, sort=FALSE, all.x=TRUE, all.y=FALSE)
+
+# Calculate Baselga index as well.
+beetlebetadiv_baselga <- sapply(beetlecomm_list, function(x) 1/as.numeric(Simpson.multi(x > 0)[2]))
+beetlebetadiv_baselga <- data.frame(siteID = names(beetlecomm_list), baselga = beetlebetadiv_baselga)
+beetlebetadiv_all <- merge(beetlebetadiv_all, transform(beetlebetadiv_baselga, siteID=as.character(siteID)))
+
+```
+
+\newpage
+There are relationships between beetle turnover rates (temporal beta-diversity) and both mean annual temperature and temperature seasonality, though we could argue this is mainly driven by seasonality since colder areas tend to be more seasonal.
+
+```{r, tidy=TRUE}
+# Statistical tests, weighted by inverse of standard error
+bio1lm <- lm(D.Value ~ bio1, weights = 1/StdErr, data = beetlebetadiv_all) # "significant"
+bio4lm <- lm(D.Value ~ bio4, weights = 1/StdErr, data = beetlebetadiv_all) # "significant"
+bio15lm <- lm(D.Value ~ bio15, weights = 1/StdErr, data = beetlebetadiv_all)
+
+summary(bio1lm)
+
+summary(bio4lm)
+
+```
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+source('~/qutil.r') # for the subtitle function
+source('~/GitHub/NEON/code/bioclimnames.r')
+
+ggplot(beetlebetadiv_all, aes(x=bio1, y=D.Value)) +
+  geom_pointrange(aes(ymin=D.Value-StdErr, ymax=D.Value+StdErr)) +
+  theme_minimal() +
+  geom_line(aes(y=predict(bio1lm)), size=1.5) +
+  geom_text(data=data.frame(bio1 = 12.5, D.Value = 3.5, lab = "list(R^2 == 0.50, p == 0.016)"), aes(label=lab), parse=TRUE) +
+  qSubtitle('Temporal beetle beta-diversity vs site temperature', 'Weighted linear regression fit') +
+  labs(x = parse(text=bioclimnames[1]), y = 'Temporal beta-diversity')
+# ggsave('figs/png/beetleturnover_vs_mat.png', height=5, width=5, dpi=300)
+
+ggplot(beetlebetadiv_all, aes(x=bio4, y=D.Value)) +
+  geom_pointrange(aes(ymin=D.Value-StdErr, ymax=D.Value+StdErr)) +
+  theme_minimal() +
+  geom_line(aes(y=predict(bio4lm)), size=1.5) +
+  geom_text(data=data.frame(bio4 = 875, D.Value = 3.5, lab = "list(R^2 == 0.49, p == 0.016)"), aes(label=lab), parse=TRUE) +
+  qSubtitle('Beetle turnover vs within-year temp variability', 'Weighted linear regression fit') +
+  labs(x = 'Temperature Seasonality (SD * 100)', y = 'Temporal beta-diversity')
+# ggsave('figs/png/beetleturnover_vs_tempCV.png', height=5, width=5, dpi=300)
+
+ggplot(beetlebetadiv_all, aes(x=bio15, y=D.Value)) +
+  geom_pointrange(aes(ymin=D.Value-StdErr, ymax=D.Value+StdErr)) +
+  theme_minimal() +
+  ggtitle('Within-year beetle turnover vs within-year precip variability') +
+  labs(x = 'Precipitation Seasonality (CV)', y = 'Temporal beta-diversity')
+```
+
+\newpage
+
+Here are the statistical tests and plots using the Baselga index instead of the Shannon's-based index. They are not weighted by standard error, as the others are. It might be possible to calculate a bootstrap standard error around the Baselga index. The statistical tests are qualitatively the same as the ones for the Shannon's-based index.
+
+```{r, tidy=TRUE}
+# Statistical tests, weighted by inverse of standard error
+bio1lm <- lm(baselga ~ bio1, data = beetlebetadiv_all) # "significant"
+bio4lm <- lm(baselga ~ bio4, data = beetlebetadiv_all) # "significant"
+bio15lm <- lm(baselga ~ bio15, data = beetlebetadiv_all)
+
+summary(bio1lm)
+
+summary(bio4lm)
+
+```
+
+```{r, message=FALSE, echo=FALSE, fig.height=4, fig.width=6}
+source('~/qutil.r') # for the subtitle function
+
+ggplot(beetlebetadiv_all, aes(x=bio1, y=baselga)) +
+  geom_point() +
+  theme_minimal() +
+  geom_line(aes(y=predict(bio1lm)), size=1.5) +
+  geom_text(data=data.frame(bio1 = 12.5, baselga = 3.5, lab = "list(R^2 == 0.58, p == 0.007)"), aes(label=lab), parse=TRUE) +
+  qSubtitle('Within-year beetle turnover (Baselga) vs site temperature', 'Standard linear regression fit') +
+  labs(x = 'Mean annual temperature (C)', y = 'Temporal beta-diversity')
+
+ggplot(beetlebetadiv_all, aes(x=bio4, y=baselga)) +
+  geom_point() +
+  theme_minimal() +
+  geom_line(aes(y=predict(bio4lm)), size=1.5) +
+  geom_text(data=data.frame(bio4 = 875, baselga = 3.5, lab = "list(R^2 == 0.50, p == 0.015)"), aes(label=lab), parse=TRUE) +
+  qSubtitle('Within-year beetle turnover (Baselga) vs within-year temp variability', 'Weighted linear regression fit') +
+  labs(x = 'Temperature Seasonality (CV)', y = 'Temporal beta-diversity')
+
+ggplot(beetlebetadiv_all, aes(x=bio15, y=baselga)) +
+  geom_point() +
+  theme_minimal() +
+  ggtitle('Within-year beetle turnover (Baselga) vs within-year precip variability') +
+  labs(x = 'Precipitation Seasonality (CV)', y = 'Temporal beta-diversity')
+```
+
+[Back to top](#top)
+
+\newpage
+# Beetle turnover versus climate from the same year
+
+The previous calculations were based on climate normals. I also extracted climate data from 2014 so that we could look at the turnover during 2014 versus the climate in 2014. It's possible that this might be a more direct predictor. For the beetles, the pattern is basically the same using 2014 temperature versus the 30-year climate normal.
+
+```{r, tidy=TRUE}
+recent_climate <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/NEON_recentclimate.csv')
+beetle_baselga_recent <- merge(transform(beetlebetadiv_baselga, siteID=as.character(siteID)), subset(recent_climate, year == 2014))
+
+bio1lm2014 <- lm(baselga ~ bio1, data = beetle_baselga_recent) # "significant"
+bio4lm2014 <- lm(baselga ~ bio4, data = beetle_baselga_recent) # "significant"
+bio15lm2014 <- lm(baselga ~ bio15, data = beetle_baselga_recent)
+
+summary(bio1lm2014)
+
+summary(bio4lm2014)
+
+```
+
+[Back to top](#top)
+
+\newpage
+# Beetle turnover versus interannual variability
+
+I also regressed beetle turnover on the last 5 years of interannual variability. You can see that the interannual temperature variability, but not precipitation, predicts the within-year beetle turnover in 2014. This is the case for both Baselga's and Shannon's metrics.
+
+```{r, tidy=TRUE}
+recent_cv <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/NEON_recentclimatecv.csv')
+beetle_baselga_recent <- merge(beetle_baselga_recent, recent_cv)
+beetlebetadiv_recent <- merge(beetlebetadiv_all[,1:3], recent_cv)
+
+# Baselga's method
+
+cvbio1lm <- lm(baselga ~ cv_bio1, data = beetle_baselga_recent) # "significant"
+cvbio12lm <- lm(baselga ~ cv_bio12, data = beetle_baselga_recent)
+
+# Interannual temperature variability
+summary(cvbio1lm)
+
+# Interannual precipitation variability
+summary(cvbio12lm)
+
+# Shannon/Jost method
+
+cvbio1lmshannon <- lm(D.Value ~ cv_bio1, weights=1/StdErr, data = beetlebetadiv_recent) # "significant"
+cvbio12lmshannon <- lm(D.Value ~ cv_bio12, weights=1/StdErr, data = beetlebetadiv_recent)
+
+# Interannual temperature variability
+summary(cvbio1lmshannon)
+
+# Interannual precipitation variability
+summary(cvbio12lmshannon)
+
+
+```

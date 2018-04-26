@@ -1,0 +1,326 @@
+---
+title: "Modified overlap statistic"
+author: "Quentin D. Read"
+date: "January 17, 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The original overlap statistic is calculated by taking the overlap of the *normalized* density functions for each pair of species. Then, the community-level median is calculated by weighting each paired observation by the harmonic mean of the abundances of each pair, then taking the median. Since the two density curves have an area of 1, the overlap is between 0 and 1, and the median overlap is also between 0 and 1. Mao-Ning's suggestion was to calculate the absolute overlap area of each pair, which would take abundance into account. At that point, you could either take the median or the weighted median of the pairwise observations. Either way, the metric has no upper bound. At first, I thought this metric would increase with increasing number of individuals, but it does not appear to matter.
+
+Below is a schematic of how the old and new metrics are calculated.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(reshape2)
+library(extrafont)
+```
+
+
+```{r, tidy = TRUE, message = FALSE}
+# Function to get the pairwise overlap with either metric
+pairwise_overlap <- function(a, b, norm=TRUE, by_area = FALSE, bw = NULL, n = NULL) {
+  
+  # clean input
+  a <- as.numeric(na.omit(a))
+  b <- as.numeric(na.omit(b))
+  
+  # define limits of a common grid, adding a buffer so that tails aren't cut off
+  lower <- min(c(a, b)) - 1 
+  upper <- max(c(a, b)) + 1
+  
+  # generate kernel densities
+  # add option to use user-defined bandwidth and n
+  if (is.null(bw)) bw <- 'nrd0' # Defaults to traditional method if not given
+  if (is.null(n)) n <- 512 # Default value if not given
+  da <- density(a, from=lower, to=upper, bw=bw, n=n)
+  db <- density(b, from=lower, to=upper, bw=bw, n=n)
+  d <- data.frame(x=da$x, a=da$y, b=db$y)
+  
+  # If not normalized, multiply each density entry by the length of each vector
+  if (!norm) {
+    d$a <- d$a * length(a)
+    d$b <- d$b * length(b)
+  }
+  
+  # calculate intersection densities
+  d$w <- pmin(d$a, d$b)
+  
+  # integrate areas under curves
+  suppressMessages(require(sfsmisc))
+  total <- integrate.xy(d$x, d$a) + integrate.xy(d$x, d$b)
+  intersection <- integrate.xy(d$x, d$w)
+  
+  # Absolute overlap area is just the intersection of the two unnormalized curves.
+  if (by_area) return(c(overlap = intersection, overlap_a = intersection, overlap_b = intersection))
+  
+  # compute overlap coefficient
+  overlap <- 2 * intersection / total
+  overlap_a <- intersection / integrate.xy(d$x, d$a)
+  overlap_b <- intersection / integrate.xy(d$x, d$b)
+  
+  return(c(overlap = overlap, overlap_a = overlap_a, overlap_b = overlap_b))
+  
+}
+
+
+
+# Common species and rare species
+set.seed(05156)
+common_sp <- rnorm(n = 100, mean = 1, sd = 1)
+rare_sp <- rnorm(n = 10, mean = 3, sd = 1)
+
+# Old pairwise metric: overlap of normalized density curves
+# The absolute area of overlap is a proportion between 0 and 1, since the two areas are each 1.
+pairwise_overlap(a = common_sp, b = rare_sp, norm = TRUE, by_area = FALSE)[1]
+
+# New pairwise metric: overlap of abundance-adjusted density curves.
+# The absolute area of overlap is in individual * trait units, which has no upper bound.
+pairwise_overlap(a = common_sp, b = rare_sp, norm = FALSE, by_area = TRUE)[1]
+
+# Plot of the old metric
+plotdat <- data.frame(species = c(rep('common',100), rep('rare',10)), trait = c(common_sp, rare_sp))
+
+ggplot(plotdat, aes(x = trait, group = species, fill = species)) + 
+  stat_density(geom = 'polygon', alpha = 0.67, position = 'identity') +
+  scale_x_continuous(limits = c(-3,8))
+
+# Plot of the new metric with abundance-adjusted density curves
+dodens <- function(x) {
+  if (sum(!is.na(x$trait)) < 2) return(NA)
+  else density(x$trait[!is.na(x$trait)])
+}
+
+library(plyr)
+
+densout <- ddply(plotdat, .(species), function(z) {
+  dz <- dodens(z)
+  if (!inherits(dz,'density')) return(data.frame(x=NA,y=NA))
+  else return(data.frame(x=dz$x, y=dz$y))
+})
+
+densout$abund <- c(rep(100, 512), rep(10, 512))
+
+ggplot(densout) +
+  geom_polygon(aes(x=x, y=y*abund, group=species, fill=species), alpha = 0.67, position = 'identity') 
+```
+
+\newpage
+
+I calculated the new metric for our dataset, as well as running the null models.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+# Load new and old overlap statistics and null distributions.
+fp <- 'C:/Users/Q/Dropbox/neon/code/overlapstat/12Jan/'
+load(file.path(fp, 'Ostats_bysite2015_harmoniciucn_newmetric.r'))
+Ostats_newmetric <- Ostats_bysite2015iucn
+load(file.path(fp, 'Ostats_bysite2015_harmoniciucn_orignull.r'))
+
+# Combine them with existing covariates.
+
+source('~/GitHub/NEON/code/analysis/ostat2longform.r')
+source('~/qutil.r')
+source('~/GitHub/NEON/code/bioclimnames.r')
+
+o2015 <- ostat2longform(Ostats_bysite2015iucn)
+o2015n <- ostat2longform(Ostats_newmetric)
+
+iucn <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/IUCN_mammal_ranges.csv')
+load('~/GitHub/NEON/allorganismal_latest.r')
+load('~/GitHub/NEON/allsiteplot_latest.r')
+
+mammalTax <- read.csv('C:/Users/Q/Dropbox/neon/protocols/taxonomy/NEON_mam_taxonomy.csv')
+mammalTraits <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/NEON_miscmammaltraits.csv')
+
+# Load all the mammal diversity, phylogeny, etc. and combine.
+load('C:/Users/Q/Dropbox/neon/code/mammalPDobject.r')
+
+spatialstat <- read.csv('C:/Users/Q/Dropbox/neon/data/external_datasets/NEON_spatial_stats_highres.csv')
+spstatmeans <- neonplotdata %>% cbind(spatialstat) %>% group_by(siteID) %>% dplyr::summarize(ruggedness=mean(tri, na.rm=TRUE))
+
+heterodf <- read.csv('C:/Users/Q/Dropbox/neon/data/heterogeneity.csv', stringsAsFactors = FALSE)
+mammalPDsite <- mammalPD %>% dplyr::rename(mpd_z = mpd.obs.z2015, mntd_z = mntd.obs.z2015) %>% dplyr::select(siteID, mpd_z, mntd_z)
+
+# Recalc richness estimators
+library(iNEXT)
+mam_forrich <- mutate(mam_capture, 
+                      individualandtag = pmin(as.character(individualID), as.character(tagID), na.rm=TRUE),
+                      year = year(date)) %>%
+  filter(order == 'Rodentia', taxonProtocolCategory == 'target', year < 2016)
+
+# Get rid of poorly identified individuals (those marked sp.) because they should not count for our sampling . . . they are spurious singletons.
+
+mammaltables <- mam_forrich %>% filter(!siteID %in% c('DSNY','DELA','HEAL'), !grepl('sp\\.', mam_forrich$scientificName)) %>% group_by(siteID) %>% do(t = table(.$taxonID))
+
+# Make list of abundances into a species X site matrix (species must be rows, sites must be columns)
+mammaltaxalist <- unique(unlist(lapply(mammaltables$t, names)))
+mammalmat <- sapply(mammaltables$t, function(x) x[match(mammaltaxalist, names(x))])
+mammalmat[is.na(mammalmat)] <- 0
+dimnames(mammalmat) <- list(mammaltaxalist, mammaltables$siteID)
+
+# With list
+mamx <- lapply(mammaltables$t, as.numeric)
+names(mamx) <- mammaltables$siteID
+
+set.seed(46545)
+default <- iNEXT(x=mamx, q=0, datatype='abundance', size = c(5,10,50,100,500,1000,2000,3000,4000))
+
+# Asymptotic estimator compared to Chao1
+
+chao <- function(x) {
+  xcomm <- table(x$taxonID)
+  S_obs <- length(xcomm)
+  f1 <- sum(xcomm == 1)
+  f2 <- sum(xcomm == 2)
+  return(data.frame(chao1 = S_obs + (f1 * (f1 - 1)) / (2 * (f2 + 1))))
+}
+
+
+
+asyrich <- default$AsyEst %>% filter(Diversity == 'Species richness') 
+asyrich$Site <- factor(asyrich$Site, levels=asyrich$Site[order(asyrich$Observed)])
+
+chao1site <- mam_forrich %>% filter(!siteID %in% c('DSNY','DELA','HEAL'), !grepl('sp\\.', mam_forrich$scientificName)) %>% group_by(siteID) %>% do(chao(.))
+chao1site$siteID <-factor(asyrich$Site, levels=asyrich$Site[order(asyrich$Observed)])
+
+richnessdat <- full_join(asyrich %>% dplyr::select(Site, Observed, Estimator) %>% dplyr::rename(siteID=Site), chao1site)
+
+# Create new mam_capture_sitemerge.
+
+mammalGuilds <- mammalTraits %>% 
+  mutate(scientificName = paste(Genus, Species)) %>%
+  dplyr::select(scientificName, Pineda_Main_food)
+
+mammalGuilds <- rbind(mammalGuilds, data.frame(scientificName=c("Dipodomys sp.", "Glaucomys sp.", "Microtus sp.", "Neotoma sp.", 
+                                                                "Perognathus sp.", "Peromyscus sp.", "Reithrodontomys sp."),
+                                               Pineda_Main_food=c('Generalist','Generalist','Herbivore','Herbivore','Generalist','Granivore','Generalist')))
+
+
+mam_forrich <- left_join(mam_forrich, mammalGuilds[-c(89,118,62,63),], by = 'scientificName')
+
+mam_noID <- mam_forrich[mam_forrich$individualandtag=='', c('year', 'siteID','plotID', 'taxonID','family', 'individualandtag','hindfootLength','earLength','tailLength','totalLength','weight','sex','lifeStage','Pineda_Main_food')]
+
+mam_grp <- filter(mam_forrich, individualandtag != '') %>%
+  group_by(year, siteID, plotID, taxonID, family, individualandtag)
+
+mam_byindiv <- summarize_at(mam_grp, vars(hindfootLength, earLength, tailLength, totalLength, weight), median, na.rm=TRUE)
+mam_byindiv_class <- do(mam_grp, data.frame(sex = .$sex[1], lifeStage = names(sort(table(.$lifeStage),decreasing=TRUE))[1], Pineda_Main_food=.$Pineda_Main_food[1]))
+
+mam_byindiv <- cbind(as.data.frame(mam_byindiv), as.data.frame(mam_byindiv_class[,c('sex', 'lifeStage','Pineda_Main_food')]))                  
+mam_byindiv <-rbind(mam_byindiv, mam_noID)
+
+mam_capture_sitemerge <- left_join(mam_byindiv, filter(neonplotdata, subtype == 'mammalGrid'))
+
+
+# Join err'thang togetha
+
+o2015 <- o2015 %>% dplyr::rename(siteID=site) %>% left_join(neonsitedata) %>% left_join(spstatmeans) %>% left_join(mammalPDsite) %>% left_join(richnessdat) %>% left_join(heterodf) 
+o2015n <- o2015n %>% dplyr::rename(siteID=site) %>% left_join(neonsitedata) %>% left_join(spstatmeans) %>% left_join(mammalPDsite) %>% left_join(richnessdat) %>% left_join(heterodf)
+
+# Set plot parameters
+theme_john <- theme_bw() + theme(panel.grid = element_blank(), 
+                                 axis.text = element_text(size = 12), 
+                                 axis.title = element_text(size = 18),
+                                 text = element_text(family = 'Helvetica'))
+
+# Add some additional parameters to get rid of the axis ticks and numbers if you want.
+theme_noaxisnumbers <- theme(axis.text.x = element_blank(), axis.text.y = element_blank(), axis.ticks.x = element_blank(), axis.ticks.y = element_blank())
+
+
+```
+
+Here is a comparison of the effect sizes for the old and new metrics.
+
+```{r, tidy = TRUE}
+# Look at distributions of (local) effect sizes for both null models.
+
+o2015$ostat_norm_localnull_ses[o2015$trait == 'logweight'] # Original metric.
+o2015n$ostat_norm_localnull_ses[o2015n$trait == 'logweight'] # Mao-Ning's suggested by-area metric.
+
+quantile(o2015$ostat_norm_localnull_ses[o2015$trait == 'logweight'], probs = c(0.5, 0.025, 0.975)) # Median and 95% envelope: old metric
+quantile(o2015n$ostat_norm_localnull_ses[o2015n$trait == 'logweight'], probs = c(0.5, 0.025, 0.975)) # Median and 95% envelope: new metric
+
+
+o2015 <- o2015 %>%
+  mutate(local_significant = ostat_norm_localnull_ses < ostat_norm_localnull_seslower | ostat_norm_localnull_ses > ostat_norm_localnull_sesupper,
+         reg_significant = ostat_norm_regnull_ses < ostat_norm_regnull_seslower | ostat_norm_regnull_ses > ostat_norm_regnull_sesupper)
+o2015n <- o2015n %>%
+  mutate(local_significant = ostat_norm_localnull_ses < ostat_norm_localnull_seslower | ostat_norm_localnull_ses > ostat_norm_localnull_sesupper,
+         reg_significant = ostat_norm_regnull_ses < ostat_norm_regnull_seslower | ostat_norm_regnull_ses > ostat_norm_regnull_sesupper)
+
+table(o2015$local_significant[o2015$trait == 'logweight']) # 5 of 23 in neutral zone, 18 of 23 are partitioned.
+table(o2015n$local_significant[o2015n$trait == 'logweight']) # 6 of 23 in neutral zone, 17 of 23 are partitioned. None greater than null in either case.
+```
+
+\newpage
+How does the new metric compare to the old metric? It seems like there are some differences between the two.
+
+```{r, tidy = TRUE}
+# Raw values
+d1 <- data.frame(old = o2015$ostat_norm[o2015$trait=='logweight'], new = o2015n$ostat_norm[o2015n$trait=='logweight'])
+cor(d1$old, d1$new)
+
+ggplot(d1, aes(x=old, y=new)) + 
+  geom_point() + theme_john
+
+# Effect sizes
+d2 <- data.frame(old = o2015$ostat_norm_localnull_ses[o2015$trait=='logweight'], new = o2015n$ostat_norm_localnull_ses[o2015n$trait=='logweight'])
+cor(d2$old, d2$new)
+
+ggplot(d2, aes(x=old, y=new)) + 
+  geom_point() + theme_john
+```
+
+\newpage
+How do the regressions on species richness, phylogenetic diversity, temperature, and environmental heterogeneity compare between the two metrics?
+
+I used the beta-transformation for the old metric, but for the new metric, I ran a generalized linear model with a log link function, since there is a right-skewed distribution of effect sizes with some close to 0 and some over 100. I also tried a linear model but the GLM appeared better.
+
+```{r, tidy = TRUE}
+newglm <- glm(ostat_norm ~ bio1 + chao1 + mpd_z + pc1_productivityheterogeneity + pc2_topographyheterogeneity, 
+            data = o2015n %>% filter(trait == 'logweight'), na.action = 'na.pass', family = Gamma(link = 'log'))
+
+
+library(MuMIn)
+newdredge <- subset(dredge(newglm), delta < 5)
+newdredge # Best model includes both axes of environmental heterogeneity. Richness drops out.
+
+newlm_bestmodel <- glm(ostat_norm ~ bio1 + pc1_productivityheterogeneity + pc2_topographyheterogeneity, 
+                      data = o2015n %>% filter(trait == 'logweight'), na.action = 'na.pass', family = Gamma(link = 'log'))
+
+summary(newlm_bestmodel)
+confint(newlm_bestmodel)
+
+```
+
+Here are plots of the new metric versus the predictor variables. Log transformation is used.
+
+```{r, echo = FALSE}
+dnew <- o2015n %>% filter(trait == 'logweight') %>% select(ostat_norm, bio1, chao1, mpd_z, pc1_productivityheterogeneity, pc2_topographyheterogeneity)
+dold <- o2015 %>% filter(trait == 'logweight') %>% select(ostat_norm, bio1, chao1, mpd_z, pc1_productivityheterogeneity, pc2_topographyheterogeneity)
+
+pnew <- ggplot(dnew, aes(y = log(ostat_norm))) + theme_john + labs(y = 'log(new metric)')
+pold <- ggplot(dold, aes(y = ostat_norm)) + theme_john + labs(y = 'old metric')
+
+pold + geom_point(aes(x = bio1)) + labs(x = 'mean annual temp')
+pnew + geom_point(aes(x = bio1)) + labs(x = 'mean annual temp')
+
+pold + geom_point(aes(x = chao1)) + labs(x = 'richness estimator')
+pnew + geom_point(aes(x = chao1)) + labs(x = 'richness estimator')
+
+pold + geom_point(aes(x = mpd_z)) + labs(x = 'phy diversity')
+pnew + geom_point(aes(x = mpd_z)) + labs(x = 'phy diversity')
+
+pold + geom_point(aes(x = pc1_productivityheterogeneity)) + labs(x = 'environmental heterogeneity')
+pnew + geom_point(aes(x = pc1_productivityheterogeneity)) + labs(x = 'environmental heterogeneity')
+
+pold + geom_point(aes(x = pc2_topographyheterogeneity)) + labs(x = 'topographic heterogeneity')
+pnew + geom_point(aes(x = pc2_topographyheterogeneity)) + labs(x = 'topographic heterogeneity')
+
+```
+
