@@ -1,10 +1,12 @@
 # Load new O-stat data (using no opportunistic species, using harmonic means, and using the two different types of null model--original and Mason's)
 # QDR 12 Jan 2016
 
+# Modified 31 May 2018: edit all file paths to work locally as well.
 # Modified 26 Apr 2018: Specify path to HPCC at top
 # Modified 16 Jan: Add OAES in (the 2015 site that was inadvertently left out of the older data objects)
 
-data_path <- '/mnt/research/neon'
+data_path <- 'C:/Users/Q/google_drive/NEON_EAGER/Manuscript1_RodentOverlap' # Change these paths as necessary.
+github_path <- '~/GitHub/NEON_repos/mammalitv'
 
 library(dplyr)
 library(ggplot2)
@@ -12,9 +14,9 @@ library(lubridate)
 library(reshape2)
 library(extrafont)
 
-fp <- file.path(data_path, 'MS1_RodentOverlap/R_data/overlapstat/12Jan')
-source('code/analysis/ostat2longform.r')
-source('~/GitHub/NEON/code/bioclimnames.r')
+fp <- file.path(data_path, 'R_data/overlapstat/12Jan')
+source(file.path(github_path, 'code/analysis/ostat2longform.r'))
+source(file.path(github_path, 'code/bioclimnames.r'))
 
 # New null
 load(file.path(fp, "Ostats_bysite2015_harmoniciucn_shufflewt.r"))
@@ -26,22 +28,20 @@ load(file.path(fp, "Ostats_bysite2015_harmoniciucn_orignull.r"))
 o2015 <- ostat2longform(Ostats_bysite2015iucn)
 o2015n <- ostat2longform(Ostats_bysite2015iucn_newnull)
 
-iucn <- read.csv(file.path(data_path, 'external_data/final_external_data/IUCN_mammal_ranges.csv'))
-load(file.path(data_path, 'final_data/allorganismal_latest.r'))
-load(file.path(data_path, 'final_data/allsiteplot_latest.r'))
+iucn <- read.csv(file.path(data_path, 'R_data/IUCN_mammal_ranges.csv'))
+load(file.path(data_path, 'R_data/allorganismal_latest.r'))
+load(file.path(data_path, 'R_data/allsiteplot_latest.r'))
 
-mammalTax <- read.csv(file.path(data_path, 'final_data/mammals/NEON_mam_taxonomy.csv'))
-mammalTraits <- read.csv(file.path(data_path, 'external_data/final_external_data/NEON_miscmammaltraits.csv'))
-
-# We need new richness and phylogenetic diversity calculations, because the old ones are based on the wrong species list. Do everything from scratch here?
+mammalTax <- read.csv(file.path(data_path, 'R_data/NEON_mam_taxonomy.csv'))
+mammalTraits <- read.csv(file.path(data_path, 'R_data/NEON_miscmammaltraits.csv'))
 
 # 12 Jan: calculated new mammal phylogenetic diversity. Updated plot object.
-load(file.path(data_path, 'MS1_RodentOverlap/R_data/mammalPDobject.r'))
+load(file.path(data_path, 'R_data/mammalPDobject.r'))
 
-spatialstat <- read.csv(file.path(data_path, 'external_data/final_external_data/NEON_spatial_stats_highres.csv'))
+spatialstat <- read.csv(file.path(data_path, 'R_data/NEON_spatial_stats_highres.csv'))
 spstatmeans <- neonplotdata %>% cbind(spatialstat) %>% group_by(siteID) %>% summarize(ruggedness=mean(tri, na.rm=TRUE))
 
-heterodf <- read.csv(file.path(data_path, 'MS1_RodentOverlap/R_data/heterogeneity.csv'), stringsAsFactors = FALSE)
+heterodf <- read.csv(file.path(data_path, 'R_data/heterogeneity.csv'), stringsAsFactors = FALSE)
 mammalPDsite <- mammalPD %>% rename(mpd_z = mpd.obs.z2015, mntd_z = mntd.obs.z2015) %>% dplyr::select(siteID, mpd_z, mntd_z)
 
 # Recalc richness estimators

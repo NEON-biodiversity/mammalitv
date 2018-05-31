@@ -26,6 +26,7 @@ ggsave('C:/Users/Q/google_drive/NEON_EAGER/Figures/revisionfigs/mapbysite_ostat_
 
 latreg <- betareg(ostat_norm ~ decimalLatitude, link = 'logit', data = o2015 %>% filter(trait=='logweight'))
 latco <- latreg$coefficients$mean
+fx <- function(x, b0, b1) 1/(1 + exp(-(b0 + b1 * x)))
 
 porawlat <- ggplot(o2015 %>% filter(trait=='logweight'), aes(x=decimalLatitude)) + 
   stat_function(geom='line', fun = fx, args=list(b0 = latco[1], b1 = latco[2]), color = 'black', size = 0.8, n=9999) +
@@ -36,3 +37,16 @@ porawlat <- ggplot(o2015 %>% filter(trait=='logweight'), aes(x=decimalLatitude))
   scale_x_continuous(expand = c(0,0), breaks = c(30,35,40,45), labels=paste0(c(30,35,40,45), '° N'), limits=c(28,48))
 
 ggsave('C:/Users/Q/google_drive/NEON_EAGER/Figures/revisionfigs/latitude_regression_19jun.png', porawlat, height=4.15, width=4.15, dpi=400)
+
+
+### added 31 May: scatter plot with colors equivalent to y values
+
+porawlat <- ggplot(o2015 %>% filter(trait=='logweight'), aes(x=decimalLatitude)) + 
+  stat_function(geom='line', fun = fx, args=list(b0 = latco[1], b1 = latco[2]), color = 'black', size = 0.8, n=9999) +
+  geom_point(aes(y = ostat_norm, fill = ostat_norm), size = 5, shape = 21) +
+  mamcs +
+  labs(y = 'Overlap', x = 'Latitude') +
+  theme_john + theme(legend.position = 'none') + 
+  scale_x_continuous(expand = c(0,0), breaks = c(30,35,40,45), labels=paste0(c(30,35,40,45), '° N'), limits=c(28,48))
+
+ggsave('C:/Users/Q/google_drive/NEON_EAGER/Manuscript1_RodentOverlap/Ecography_submission/figs/fig2b_colors.png', porawlat, height=4.15, width=4.15, dpi=400)
