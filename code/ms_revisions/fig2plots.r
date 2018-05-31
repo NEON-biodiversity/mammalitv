@@ -15,6 +15,8 @@ datamap <- ggplot(subset(neonsitedata, decimalLatitude>20 & decimalLatitude<50),
   theme(panel.border = element_rect(color='black', fill=NA), panel.background=element_blank(), panel.grid=element_blank(), axis.title = element_blank())
 
 mamcs <- scale_fill_gradientn(name = 'Overlap', colours = RColorBrewer::brewer.pal(9, 'RdYlBu'), breaks=c(0,.25,.5,.75,1))
+# Edited color scheme 31 May 2018
+mamcs <- scale_fill_gradientn(name = 'Overlap', colours = RColorBrewer::brewer.pal(9, 'Oranges'), breaks=c(0,.25,.5,.75,1))
 
 us_map_ovl <- datamap + geom_point(size=5, shape=21, aes(fill = ostat_norm), data=subset(o2015, decimalLatitude>20 & decimalLatitude<50 & trait == 'logweight')) +
   mamcs +
